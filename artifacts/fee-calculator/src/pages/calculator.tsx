@@ -43,6 +43,7 @@ export default function CalculatorPage() {
   const [includeTrip, setIncludeTrip] = useState(false);
   const [workingDays, setWorkingDays] = useState('');
   const [travelDays, setTravelDays] = useState('');
+  const [travelDayFull, setTravelDayFull] = useState(false); // false = 0.5 rate, true = full rate
 
   // Perm State
   const [salary, setSalary] = useState('50000');
@@ -59,6 +60,7 @@ export default function CalculatorPage() {
     setIncludeTrip(false);
     setWorkingDays('');
     setTravelDays('');
+    setTravelDayFull(false);
     setSalary('50000');
     setPlacementFee('20');
     setIncludePermNI(false);
@@ -79,8 +81,8 @@ export default function CalculatorPage() {
   // Full-day total charge to client
   const cTotalCharge = cRate + cEmployerNI + cSubsistenceAmt + cManagementFee;
 
-  // --- Travel day calculations (0.5 rate, full subsistence) ---
-  const cTravelRate = cRate * 0.5;
+  // --- Travel day calculations (0.5 or full rate, full subsistence always) ---
+  const cTravelRate = cRate * (travelDayFull ? 1 : 0.5);
   const cTravelNI = includeNI ? cTravelRate * 0.155 : 0;
   const cTravelFeeBase = cTravelRate + cTravelNI + (subsistenceInFee ? cSubsistenceAmt : 0);
   const cTravelManagementFee = cTravelFeeBase * (cMargin / 100);
@@ -229,8 +231,33 @@ export default function CalculatorPage() {
 
                     <div className="space-y-2">
                       <label className="block text-sm font-bold text-foreground">Travel Days</label>
-                      <p className="text-xs text-muted-foreground font-medium -mt-1">Charged at 0.5 day rate. Subsistence always at full rate.</p>
+                      <p className="text-xs text-muted-foreground font-medium -mt-1">Subsistence always at full rate regardless of day rate.</p>
                       <NumInput value={travelDays} onChange={setTravelDays} placeholder="0" />
+                      {/* 0.5 / full day toggle */}
+                      <div className="flex items-center gap-1 mt-2 p-1 bg-input/40 border border-input rounded-xl w-fit">
+                        <button
+                          onClick={() => setTravelDayFull(false)}
+                          className={cn(
+                            'px-4 py-1.5 rounded-lg text-sm font-bold transition-all',
+                            !travelDayFull
+                              ? 'bg-primary text-primary-foreground shadow'
+                              : 'text-muted-foreground hover:text-foreground',
+                          )}
+                        >
+                          0.5 day
+                        </button>
+                        <button
+                          onClick={() => setTravelDayFull(true)}
+                          className={cn(
+                            'px-4 py-1.5 rounded-lg text-sm font-bold transition-all',
+                            travelDayFull
+                              ? 'bg-primary text-primary-foreground shadow'
+                              : 'text-muted-foreground hover:text-foreground',
+                          )}
+                        >
+                          Full day
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
