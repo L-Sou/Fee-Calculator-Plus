@@ -34,9 +34,9 @@ export default function CalculatorPage() {
   // Contract State
   const [consolidatedRate, setConsolidatedRate] = useState('');
   const [margin, setMargin] = useState('');
-  const [includeNI, setIncludeNI] = useState(true);
+  const [includeNI, setIncludeNI] = useState(false);
   const [subsistence, setSubsistence] = useState('');
-  const [includeSubsistence, setIncludeSubsistence] = useState(true);
+  const [includeSubsistence, setIncludeSubsistence] = useState(false);
   const [subsistenceInFee, setSubsistenceInFee] = useState(true);
 
   // Trip State
@@ -52,9 +52,9 @@ export default function CalculatorPage() {
   const reset = () => {
     setConsolidatedRate('');
     setMargin('');
-    setIncludeNI(true);
+    setIncludeNI(false);
     setSubsistence('');
-    setIncludeSubsistence(true);
+    setIncludeSubsistence(false);
     setSubsistenceInFee(true);
     setIncludeTrip(false);
     setWorkingDays('');
