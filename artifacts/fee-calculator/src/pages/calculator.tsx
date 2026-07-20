@@ -318,6 +318,19 @@ export default function CalculatorPage() {
                           </div>
                         </div>
 
+                        {/* Subsistence subtotal */}
+                        {includeSubsistence && cSubsistenceAmt > 0 && (
+                          <div className="bg-primary-foreground/5 p-4 rounded-xl flex items-center justify-between">
+                            <div>
+                              <span className="text-sm font-bold text-primary-foreground/80 block">Total Subsistence</span>
+                              <span className="text-xs text-primary-foreground/50 font-medium">
+                                {nWorkingDays + nTravelDays} days × {formatCurrency(cSubsistenceAmt)}
+                              </span>
+                            </div>
+                            <span className="font-mono font-bold">{formatCurrency((nWorkingDays + nTravelDays) * cSubsistenceAmt)}</span>
+                          </div>
+                        )}
+
                         {/* Grand total */}
                         <div className="pt-2 border-t-2 border-primary-foreground/30 flex items-center justify-between">
                           <div>
