@@ -11,8 +11,8 @@ export default function CalculatorPage() {
   const [mode, setMode] = useState<'contract' | 'perm'>('contract');
 
   // Contract State
-  const [consolidatedRate, setConsolidatedRate] = useState('183.39');
-  const [margin, setMargin] = useState('11');
+  const [consolidatedRate, setConsolidatedRate] = useState('');
+  const [margin, setMargin] = useState('');
   const [includeNI, setIncludeNI] = useState(true);
   const [subsistence, setSubsistence] = useState('');
   const [includeSubsistence, setIncludeSubsistence] = useState(true);
@@ -24,8 +24,8 @@ export default function CalculatorPage() {
   const [includePermNI, setIncludePermNI] = useState(false);
 
   const reset = () => {
-    setConsolidatedRate('183.39');
-    setMargin('11');
+    setConsolidatedRate('');
+    setMargin('');
     setIncludeNI(true);
     setSubsistence('');
     setIncludeSubsistence(true);
