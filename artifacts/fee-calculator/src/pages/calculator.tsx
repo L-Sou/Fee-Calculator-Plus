@@ -42,8 +42,8 @@ export default function CalculatorPage() {
   const cMargin = parseFloat(margin) || 0;
   const cSubsistenceAmt = includeSubsistence ? (parseFloat(subsistence) || 0) : 0;
 
-  // NI: 15% of worker pay above the £35/day secondary threshold
-  const cEmployerNI = includeNI ? Math.max(0, (cRate - 35) * 0.15) : 0;
+  // NI: 15.5% of the full consolidated rate
+  const cEmployerNI = includeNI ? cRate * 0.155 : 0;
 
   // Management fee is a % markup applied to the base costs
   // Base = consolidated rate + NI + subsistence (if subsistenceInFee)
@@ -143,7 +143,7 @@ export default function CalculatorPage() {
                       >
                         Include Employer's NI
                       </label>
-                      <p className="text-xs text-muted-foreground font-medium">15% of worker pay above £35/day threshold. Added to total charge.</p>
+                      <p className="text-xs text-muted-foreground font-medium">15.5% of the consolidated rate. Added to total charge.</p>
                     </div>
                     <Switch checked={includeNI} onCheckedChange={setIncludeNI} />
                   </div>
