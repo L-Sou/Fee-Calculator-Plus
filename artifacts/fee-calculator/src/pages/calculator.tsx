@@ -4,7 +4,6 @@ import { Switch } from '@/components/ui/switch';
 import { Calculator, RotateCcw, Briefcase, FileText, UtensilsCrossed } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-// Helper to format currency
 const formatCurrency = (val: number) =>
   new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP', minimumFractionDigits: 2 }).format(val);
 
@@ -17,6 +16,7 @@ export default function CalculatorPage() {
   const [includeNI, setIncludeNI] = useState(true);
   const [subsistence, setSubsistence] = useState('');
   const [includeSubsistence, setIncludeSubsistence] = useState(true);
+  const [subsistenceInFee, setSubsistenceInFee] = useState(false);
 
   // Perm State
   const [salary, setSalary] = useState('50000');
@@ -29,6 +29,7 @@ export default function CalculatorPage() {
     setIncludeNI(true);
     setSubsistence('');
     setIncludeSubsistence(true);
+    setSubsistenceInFee(false);
     setSalary('50000');
     setPlacementFee('20');
     setIncludePermNI(false);
@@ -39,12 +40,16 @@ export default function CalculatorPage() {
   const cMargin = parseFloat(margin) || 0;
   const cSubsistenceAmt = includeSubsistence ? (parseFloat(subsistence) || 0) : 0;
 
-  const cManagementFee = cDayRate * (cMargin / 100);
+  // When subsistenceInFee is on, the margin % is applied to (day rate + subsistence)
+  const cFeeBase = cDayRate + (subsistenceInFee ? cSubsistenceAmt : 0);
+  const cManagementFee = cFeeBase * (cMargin / 100);
   const cGrossPay = cDayRate - cManagementFee;
   // NI: 15% of gross worker pay above the £35/day secondary threshold
   const cEmployerNI = includeNI ? Math.max(0, (cGrossPay - 35) * 0.15) : 0;
   const cWorkerNet = cGrossPay - cEmployerNI;
-  const cTotalClientInvoice = cDayRate + cSubsistenceAmt;
+
+  // All-in total: day rate + subsistence + employer NI
+  const cAllInTotal = cDayRate + cSubsistenceAmt + cEmployerNI;
 
   // --- Perm Calculations ---
   const pSalary = parseFloat(salary) || 0;
@@ -149,26 +154,44 @@ export default function CalculatorPage() {
                     </div>
                     <div className="flex-1">
                       <h2 className="text-base font-bold">Subsistence</h2>
-                      <p className="text-xs text-muted-foreground font-medium mt-0.5">Daily allowance passed through to the client</p>
+                      <p className="text-xs text-muted-foreground font-medium mt-0.5">Daily allowance charged to the client</p>
                     </div>
-                    <Switch checked={includeSubsistence} onCheckedChange={setIncludeSubsistence} />
+                    <Switch checked={includeSubsistence} onCheckedChange={(v) => { setIncludeSubsistence(v); if (!v) setSubsistenceInFee(false); }} />
                   </div>
 
-                  <div className={cn('space-y-2 transition-opacity duration-200', !includeSubsistence && 'opacity-40 pointer-events-none')}>
-                    <label className="block text-sm font-bold text-foreground">Subsistence Rate (£ per day)</label>
-                    <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono">£</span>
-                      <input
-                        type="number"
-                        value={subsistence}
-                        onChange={e => setSubsistence(e.target.value)}
-                        className="w-full pl-10 pr-4 py-3 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all font-mono text-base font-medium"
-                        placeholder="0.00"
+                  <div className={cn('space-y-5 transition-opacity duration-200', !includeSubsistence && 'opacity-40 pointer-events-none')}>
+                    <div className="space-y-2">
+                      <label className="block text-sm font-bold text-foreground">Subsistence Rate (£ per day)</label>
+                      <div className="relative">
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono">£</span>
+                        <input
+                          type="number"
+                          value={subsistence}
+                          onChange={e => setSubsistence(e.target.value)}
+                          className="w-full pl-10 pr-4 py-3 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all font-mono text-base font-medium"
+                          placeholder="0.00"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1">
+                      <div className="space-y-1 pr-4">
+                        <label
+                          className="text-sm font-bold text-foreground cursor-pointer"
+                          onClick={() => includeSubsistence && setSubsistenceInFee(!subsistenceInFee)}
+                        >
+                          Include in management fee
+                        </label>
+                        <p className="text-xs text-muted-foreground font-medium">
+                          Apply the {cMargin > 0 ? `${cMargin}%` : 'margin'} to day rate + subsistence combined.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={subsistenceInFee}
+                        onCheckedChange={setSubsistenceInFee}
+                        disabled={!includeSubsistence}
                       />
                     </div>
-                    <p className="text-xs text-muted-foreground font-medium">
-                      Passed through at cost — not subject to agency margin or employer's NI.
-                    </p>
                   </div>
                 </div>
               </div>
@@ -182,28 +205,49 @@ export default function CalculatorPage() {
                   </div>
 
                   <div className="space-y-4">
+                    {/* Day rate block */}
                     <LineItem label="Day Rate" value={cDayRate} isBold />
-                    <LineItem label="Agency Management Fee" value={cManagementFee} indent />
+                    <LineItem
+                      label={subsistenceInFee && cSubsistenceAmt > 0
+                        ? `Agency Management Fee (${cMargin.toFixed(1)}% of day rate + subsistence)`
+                        : `Agency Management Fee (${cMargin.toFixed(1)}%)`}
+                      value={cManagementFee}
+                      indent
+                    />
                     <LineItem label="Gross Worker Pay" value={cGrossPay} />
                     {includeNI && <LineItem label="Employer's NI" value={cEmployerNI} indent isSubtracted />}
+                    <LineItem label="Worker's Net Pay" value={cWorkerNet} isSubTotal />
 
+                    {/* Subsistence block */}
                     {includeSubsistence && cSubsistenceAmt > 0 && (
                       <>
                         <div className="h-px bg-primary-foreground/20 my-1" />
-                        <LineItem label="Subsistence (pass-through)" value={cSubsistenceAmt} isHighlighted />
+                        <LineItem
+                          label={subsistenceInFee ? 'Subsistence (included in fee base)' : 'Subsistence (pass-through)'}
+                          value={cSubsistenceAmt}
+                        />
                       </>
                     )}
 
-                    <div className="h-px bg-primary-foreground/20 my-1" />
+                    {/* NI as additional charge */}
+                    {includeNI && (
+                      <>
+                        <div className="h-px bg-primary-foreground/20 my-1" />
+                        <LineItem label="Employer's NI (additional charge)" value={cEmployerNI} />
+                      </>
+                    )}
 
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-semibold text-primary-foreground/70">Worker's Net Pay</span>
-                      <span className="text-xl font-mono font-bold tracking-tight">{formatCurrency(cWorkerNet)}</span>
-                    </div>
-
-                    <div className="flex items-center justify-between pt-3 border-t border-primary-foreground/20 mt-2">
-                      <span className="text-lg font-bold">Total Client Invoice</span>
-                      <span className="text-3xl font-mono font-bold tracking-tight text-chart-1">{formatCurrency(cTotalClientInvoice)}</span>
+                    {/* All-in total */}
+                    <div className="mt-4 pt-4 border-t-2 border-primary-foreground/30">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-lg font-bold block">Total to Charge Client</span>
+                          <span className="text-xs text-primary-foreground/50 font-medium">
+                            Day rate{includeSubsistence && cSubsistenceAmt > 0 ? ' + subsistence' : ''}{includeNI ? " + employer's NI" : ''}
+                          </span>
+                        </div>
+                        <span className="text-3xl font-mono font-bold tracking-tight text-chart-1">{formatCurrency(cAllInTotal)}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -215,18 +259,20 @@ export default function CalculatorPage() {
                     <ProjectionCard
                       label="Weekly"
                       days={5}
-                      totalInvoice={cTotalClientInvoice}
+                      allInTotal={cAllInTotal}
                       agencyFee={cManagementFee}
                       subsistence={includeSubsistence ? cSubsistenceAmt : 0}
                       workerPay={cWorkerNet}
+                      employerNI={cEmployerNI}
                     />
                     <ProjectionCard
                       label="Monthly"
                       days={21}
-                      totalInvoice={cTotalClientInvoice}
+                      allInTotal={cAllInTotal}
                       agencyFee={cManagementFee}
                       subsistence={includeSubsistence ? cSubsistenceAmt : 0}
                       workerPay={cWorkerNet}
+                      employerNI={cEmployerNI}
                     />
                   </div>
                 </div>
@@ -336,27 +382,27 @@ function LineItem({
   indent = false,
   isBold = false,
   isSubtracted = false,
-  isHighlighted = false,
+  isSubTotal = false,
 }: {
   label: string;
   value: number;
   indent?: boolean;
   isBold?: boolean;
   isSubtracted?: boolean;
-  isHighlighted?: boolean;
+  isSubTotal?: boolean;
 }) {
   return (
     <div
       className={cn(
         'flex items-center justify-between transition-colors',
-        indent ? 'pl-6 text-primary-foreground/70' : 'text-primary-foreground/90',
+        indent ? 'pl-6 text-primary-foreground/60' : 'text-primary-foreground/90',
         isBold && 'font-bold text-white',
-        isHighlighted && 'text-chart-1 font-semibold',
+        isSubTotal && 'text-primary-foreground/70',
       )}
     >
-      <span className="text-sm font-medium">{label}</span>
-      <span className={cn('font-mono tracking-tight', isBold ? 'text-base' : 'text-sm')}>
-        {isSubtracted && '- '}{formatCurrency(value)}
+      <span className={cn('text-sm font-medium', isSubTotal && 'text-sm')}>{label}</span>
+      <span className={cn('font-mono tracking-tight', isBold ? 'text-base font-bold' : isSubTotal ? 'text-base font-bold' : 'text-sm')}>
+        {isSubtracted && '− '}{formatCurrency(value)}
       </span>
     </div>
   );
@@ -365,17 +411,19 @@ function LineItem({
 function ProjectionCard({
   label,
   days,
-  totalInvoice,
+  allInTotal,
   agencyFee,
   subsistence,
   workerPay,
+  employerNI,
 }: {
   label: string;
   days: number;
-  totalInvoice: number;
+  allInTotal: number;
   agencyFee: number;
   subsistence: number;
   workerPay: number;
+  employerNI: number;
 }) {
   return (
     <div className="bg-primary-foreground/5 p-5 rounded-xl">
@@ -385,17 +433,23 @@ function ProjectionCard({
       </div>
       <div className="space-y-2.5">
         <div className="flex justify-between text-sm">
-          <span className="text-primary-foreground/70 font-medium">Client Invoice</span>
-          <span className="font-mono font-bold">{formatCurrency(totalInvoice * days)}</span>
+          <span className="text-primary-foreground/70 font-medium">Total to Charge</span>
+          <span className="font-mono font-bold text-chart-1">{formatCurrency(allInTotal * days)}</span>
         </div>
         <div className="flex justify-between text-sm">
           <span className="text-primary-foreground/70 font-medium">Agency Fee</span>
-          <span className="font-mono font-bold text-chart-1">{formatCurrency(agencyFee * days)}</span>
+          <span className="font-mono font-bold">{formatCurrency(agencyFee * days)}</span>
         </div>
         {subsistence > 0 && (
           <div className="flex justify-between text-sm">
             <span className="text-primary-foreground/70 font-medium">Subsistence</span>
             <span className="font-mono font-bold">{formatCurrency(subsistence * days)}</span>
+          </div>
+        )}
+        {employerNI > 0 && (
+          <div className="flex justify-between text-sm">
+            <span className="text-primary-foreground/70 font-medium">Employer's NI</span>
+            <span className="font-mono font-bold">{formatCurrency(employerNI * days)}</span>
           </div>
         )}
         <div className="flex justify-between text-sm pt-2 border-t border-primary-foreground/10">
