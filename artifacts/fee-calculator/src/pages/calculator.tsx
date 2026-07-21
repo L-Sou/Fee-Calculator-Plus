@@ -30,19 +30,34 @@ const NumInput = ({
   </div>
 );
 
-// ─── Half / Full day pill toggle ──────────────────────────────────────────────
-const DayToggle = ({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) => (
-  <div className="flex items-center gap-1 p-1 bg-input/40 border border-input rounded-xl w-fit">
-    <button
-      onClick={() => onChange(false)}
-      className={cn('px-3 py-1 rounded-lg text-sm font-bold transition-all',
-        !value ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground')}
-    >0.5 day</button>
-    <button
-      onClick={() => onChange(true)}
-      className={cn('px-3 py-1 rounded-lg text-sm font-bold transition-all',
-        value ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground')}
-    >Full day</button>
+// ─── Half / Full / Custom day rate selector ───────────────────────────────────
+const DayToggle = ({
+  mode, onModeChange, customVal, onCustomChange,
+}: {
+  mode: 'half' | 'full' | 'custom'; onModeChange: (v: 'half' | 'full' | 'custom') => void;
+  customVal: string; onCustomChange: (v: string) => void;
+}) => (
+  <div className="space-y-2">
+    <div className="flex items-center gap-1 p-1 bg-input/40 border border-input rounded-xl w-fit">
+      <button
+        onClick={() => onModeChange('half')}
+        className={cn('px-3 py-1 rounded-lg text-sm font-bold transition-all',
+          mode === 'half' ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground')}
+      >0.5 day</button>
+      <button
+        onClick={() => onModeChange('full')}
+        className={cn('px-3 py-1 rounded-lg text-sm font-bold transition-all',
+          mode === 'full' ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground')}
+      >Full day</button>
+      <button
+        onClick={() => onModeChange('custom')}
+        className={cn('px-3 py-1 rounded-lg text-sm font-bold transition-all',
+          mode === 'custom' ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground')}
+      >Custom</button>
+    </div>
+    {mode === 'custom' && (
+      <NumInput value={customVal} onChange={onCustomChange} suffix="days" placeholder="0.5" />
+    )}
   </div>
 );
 
@@ -216,16 +231,22 @@ export default function CalculatorPage() {
   // Payment Days State
   const [pdPayrollType, setPdPayrollType] = useState<'monthly' | 'fortnightly'>('monthly');
   const [pdStartDate, setPdStartDate] = useState('');
-  const [pdStartFull, setPdStartFull] = useState(true);
+  const [pdStartMode, setPdStartMode] = useState<'half' | 'full' | 'custom'>('full');
+  const [pdStartCustomVal, setPdStartCustomVal] = useState('0.5');
   const [pdFinishDate, setPdFinishDate] = useState('');
-  const [pdFinishFull, setPdFinishFull] = useState(true);
+  const [pdFinishMode, setPdFinishMode] = useState<'half' | 'full' | 'custom'>('full');
+  const [pdFinishCustomVal, setPdFinishCustomVal] = useState('0.5');
+  const [pdIncludeSubsistence, setPdIncludeSubsistence] = useState(false);
+  const [pdSubsistenceRate, setPdSubsistenceRate] = useState('');
 
   const reset = () => {
     setConsolidatedRate(''); setMargin(''); setIncludeNI(false);
     setSubsistence(''); setIncludeSubsistence(false); setSubsistenceInFee(true);
     setIncludeTrip(false); setWorkingDays(''); setTravelDays(''); setTravelDayFull(false);
     setSalary('50000'); setPlacementFee('20'); setIncludePermNI(false);
-    setPdStartDate(''); setPdStartFull(true); setPdFinishDate(''); setPdFinishFull(true);
+    setPdStartDate(''); setPdStartMode('full'); setPdStartCustomVal('0.5');
+    setPdFinishDate(''); setPdFinishMode('full'); setPdFinishCustomVal('0.5');
+    setPdIncludeSubsistence(false); setPdSubsistenceRate('');
   };
 
   // ── Contract Calculations ──────────────────────────────────────────────────
@@ -259,11 +280,13 @@ export default function CalculatorPage() {
   const pTotalCost = pPlacementFee + (includePermNI ? pEmployerNI : 0);
 
   // ── Payment Days Calculations ──────────────────────────────────────────────
-  const pdStartVal = pdStartFull ? 1.0 : 0.5;
-  const pdFinishVal = pdFinishFull ? 1.0 : 0.5;
+  const pdStartVal = pdStartMode === 'full' ? 1.0 : pdStartMode === 'half' ? 0.5 : (parseFloat(pdStartCustomVal) || 0);
+  const pdFinishVal = pdFinishMode === 'full' ? 1.0 : pdFinishMode === 'half' ? 0.5 : (parseFloat(pdFinishCustomVal) || 0);
+  const pdSubsistenceAmt = pdIncludeSubsistence ? (parseFloat(pdSubsistenceRate) || 0) : 0;
 
   let pdSplits: PayrollSplit[] = [];
   let pdTotalDays: number | null = null;
+  let pdTotalSubsistence: number | null = null;
   let pdError: string | null = null;
 
   if (pdStartDate && pdFinishDate) {
@@ -275,6 +298,7 @@ export default function CalculatorPage() {
       try {
         pdSplits = computePayrollSplits(start, finish, pdStartVal, pdFinishVal, pdPayrollType);
         pdTotalDays = pdSplits.reduce((sum, s) => sum + s.days, 0);
+        pdTotalSubsistence = pdIncludeSubsistence ? pdSplits.reduce((sum, s) => sum + s.days * pdSubsistenceAmt, 0) : null;
       } catch {
         pdError = 'Could not determine payroll period.';
       }
@@ -587,7 +611,7 @@ export default function CalculatorPage() {
                     />
                     <div className="space-y-1">
                       <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">First day rate</label>
-                      <DayToggle value={pdStartFull} onChange={setPdStartFull} />
+                      <DayToggle mode={pdStartMode} onModeChange={setPdStartMode} customVal={pdStartCustomVal} onCustomChange={setPdStartCustomVal} />
                     </div>
                   </div>
 
@@ -602,7 +626,19 @@ export default function CalculatorPage() {
                     />
                     <div className="space-y-1">
                       <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Last day rate</label>
-                      <DayToggle value={pdFinishFull} onChange={setPdFinishFull} />
+                      <DayToggle mode={pdFinishMode} onModeChange={setPdFinishMode} customVal={pdFinishCustomVal} onCustomChange={setPdFinishCustomVal} />
+                    </div>
+                  </div>
+
+                  {/* Subsistence */}
+                  <div className="space-y-3 pt-4 border-t border-border/60">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-bold text-foreground cursor-pointer" onClick={() => setPdIncludeSubsistence(!pdIncludeSubsistence)}>Include Subsistence</label>
+                      <Switch checked={pdIncludeSubsistence} onCheckedChange={setPdIncludeSubsistence} />
+                    </div>
+                    <div className={cn('space-y-1 transition-opacity duration-200', !pdIncludeSubsistence && 'opacity-40 pointer-events-none')}>
+                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Subsistence Rate (£ per day)</label>
+                      <NumInput value={pdSubsistenceRate} onChange={setPdSubsistenceRate} prefix="£" />
                     </div>
                   </div>
                 </div>
@@ -634,12 +670,20 @@ export default function CalculatorPage() {
                         <p className="text-sm font-bold uppercase tracking-widest text-primary-foreground/60 mb-1">Total Payable Days</p>
                         <p className="text-6xl font-mono font-bold text-chart-1">{pdTotalDays}</p>
                         {pdStartDate === pdFinishDate ? (
-                          <p className="text-xs text-primary-foreground/50 font-medium mt-2">Single day ({pdStartFull ? 'full' : 'half'} day)</p>
+                          <p className="text-xs text-primary-foreground/50 font-medium mt-2">
+                            Single day ({pdStartMode === 'custom' ? `${pdStartVal}` : pdStartMode} day)
+                          </p>
                         ) : (
                           <p className="text-xs text-primary-foreground/50 font-medium mt-2">
                             {formatUK(parseDate(pdStartDate))} → {formatUK(parseDate(pdFinishDate))}
                             {pdSplits.length > 1 && <span className="ml-2 text-chart-1">· {pdSplits.length} payments</span>}
                           </p>
+                        )}
+                        {pdIncludeSubsistence && pdSubsistenceAmt > 0 && pdTotalSubsistence !== null && (
+                          <div className="mt-4 pt-4 border-t border-primary-foreground/10 flex items-center justify-between">
+                            <span className="text-xs font-bold uppercase tracking-widest text-primary-foreground/50">Total Subsistence</span>
+                            <span className="font-mono font-bold text-chart-1">{formatCurrency(pdTotalSubsistence)}</span>
+                          </div>
                         )}
                       </div>
 
@@ -676,6 +720,15 @@ export default function CalculatorPage() {
                             {pdPayrollType === 'monthly' && (
                               <div className="px-4 py-2 bg-primary-foreground/5 border-t border-primary-foreground/10">
                                 <span className="text-xs text-primary-foreground/50 font-medium">{split.periodLabel} payroll</span>
+                              </div>
+                            )}
+                            {/* Subsistence for this period */}
+                            {pdIncludeSubsistence && pdSubsistenceAmt > 0 && (
+                              <div className="px-4 py-2.5 border-t border-primary-foreground/10 flex items-center justify-between">
+                                <span className="text-xs text-primary-foreground/50 font-medium">
+                                  Subsistence ({split.days % 1 === 0 ? split.days.toFixed(0) : split.days} × {formatCurrency(pdSubsistenceAmt)})
+                                </span>
+                                <span className="font-mono font-bold text-sm text-chart-1">{formatCurrency(split.days * pdSubsistenceAmt)}</span>
                               </div>
                             )}
                           </div>
