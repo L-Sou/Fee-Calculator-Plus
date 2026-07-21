@@ -99,52 +99,94 @@ function monthlyPayday(year: number, month: number): Date {
 
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
-interface PayrollResult {
-  payday: Date;
+interface PayrollSplit {
+  periodStart: Date;
+  periodEnd: Date;
   cutoff: Date;
-  periodLabel: string; // human-readable period
-}
-
-function findMonthlyPayroll(finishDate: Date): PayrollResult {
-  let year = finishDate.getFullYear();
-  let month = finishDate.getMonth();
-  for (let i = 0; i < 15; i++) {
-    const payday = monthlyPayday(year, month);
-    const cutoff = sundayBefore(payday);
-    if (finishDate.getTime() <= cutoff.getTime()) {
-      return { payday, cutoff, periodLabel: `${MONTH_NAMES[month]} ${year}` };
-    }
-    if (++month > 11) { month = 0; year++; }
-  }
-  throw new Error('No payroll period found');
+  payday: Date;
+  periodLabel: string;
+  days: number;
 }
 
 // Fortnightly anchor: 9 Jan 2026 (Friday)
 const FN_ANCHOR = new Date(2026, 0, 9);
 
-function findFortnightlyPayroll(finishDate: Date): PayrollResult {
-  // Find cycle index such that finishDate <= cutoff of that cycle
-  const diffDays = Math.round((finishDate.getTime() - FN_ANCHOR.getTime()) / 86400000);
-
-  // Start searching from the cycle that contains finishDate (or 0 if before anchor)
-  const startIdx = Math.max(0, Math.floor(diffDays / 14));
-
-  for (let i = startIdx; i <= startIdx + 2; i++) {
-    const payday = addDays(FN_ANCHOR, i * 14);
+/** All fortnightly {payday, cutoff} pairs where cutoff >= start, up to and including the first cutoff >= finish */
+function getAllFortnightlyCutoffs(start: Date, finish: Date): Array<{ payday: Date; cutoff: Date }> {
+  const diffDays = Math.round((start.getTime() - FN_ANCHOR.getTime()) / 86400000);
+  let idx = Math.max(0, Math.floor(diffDays / 14));
+  // Walk back if needed so we don't miss the first relevant cut-off
+  while (idx > 0 && sundayBefore(addDays(FN_ANCHOR, (idx - 1) * 14)).getTime() >= start.getTime()) idx--;
+  // Advance until cutoff >= start
+  while (sundayBefore(addDays(FN_ANCHOR, idx * 14)).getTime() < start.getTime()) idx++;
+  const results: Array<{ payday: Date; cutoff: Date }> = [];
+  for (;;) {
+    const payday = addDays(FN_ANCHOR, idx * 14);
     const cutoff = sundayBefore(payday);
-    if (finishDate.getTime() <= cutoff.getTime()) {
-      const periodStart = addDays(cutoff, -13);
-      return {
-        payday,
-        cutoff,
-        periodLabel: `${formatUK(periodStart)} – ${formatUK(cutoff)}`,
-      };
-    }
+    results.push({ payday, cutoff });
+    if (cutoff.getTime() >= finish.getTime()) break;
+    idx++;
   }
-  // Fallback: next cycle
-  const payday = addDays(FN_ANCHOR, (startIdx + 2) * 14);
-  const cutoff = sundayBefore(payday);
-  return { payday, cutoff, periodLabel: `${formatUK(addDays(cutoff, -13))} – ${formatUK(cutoff)}` };
+  return results;
+}
+
+/** All monthly {payday, cutoff} pairs where cutoff >= start, up to and including the first cutoff >= finish */
+function getAllMonthlyCutoffs(start: Date, finish: Date): Array<{ payday: Date; cutoff: Date }> {
+  let year = start.getFullYear();
+  let month = start.getMonth();
+  const results: Array<{ payday: Date; cutoff: Date }> = [];
+  for (let i = 0; i < 25; i++) {
+    const payday = monthlyPayday(year, month);
+    const cutoff = sundayBefore(payday);
+    if (cutoff.getTime() >= start.getTime()) {
+      results.push({ payday, cutoff });
+      if (cutoff.getTime() >= finish.getTime()) break;
+    }
+    if (++month > 11) { month = 0; year++; }
+  }
+  return results;
+}
+
+/**
+ * Split the assignment [start, finish] across payroll cut-offs.
+ * Each split covers from the day after the previous cut-off to the next cut-off (or finish).
+ * Only the overall first day uses startVal; only the overall last day uses finishVal.
+ * All other days (including the first day of subsequent periods) count as 1.0.
+ */
+function computePayrollSplits(
+  start: Date, finish: Date, startVal: number, finishVal: number,
+  payrollType: 'monthly' | 'fortnightly',
+): PayrollSplit[] {
+  const cutoffs = payrollType === 'fortnightly'
+    ? getAllFortnightlyCutoffs(start, finish)
+    : getAllMonthlyCutoffs(start, finish);
+  const splits: PayrollSplit[] = [];
+  let periodStart = start;
+  for (let i = 0; i < cutoffs.length; i++) {
+    const { payday, cutoff } = cutoffs[i];
+    const isFirst = i === 0;
+    const isLast = cutoff.getTime() >= finish.getTime();
+    const periodEnd = isLast ? finish : cutoff;
+    const diff = Math.round((periodEnd.getTime() - periodStart.getTime()) / 86400000);
+    let days: number;
+    if (diff === 0) {
+      // Single-day period
+      days = isFirst ? startVal : isLast ? finishVal : 1.0;
+    } else {
+      const firstVal = isFirst ? startVal : 1.0;
+      const lastVal = isLast ? finishVal : 1.0;
+      days = firstVal + (diff - 1) + lastVal;
+    }
+    const m = payday.getMonth();
+    const y = payday.getFullYear();
+    const periodLabel = payrollType === 'monthly'
+      ? `${MONTH_NAMES[m]} ${y}`
+      : `${formatUK(periodStart)} – ${formatUK(periodEnd)}`;
+    splits.push({ periodStart, periodEnd, cutoff, payday, periodLabel, days });
+    if (isLast) break;
+    periodStart = addDays(cutoff, 1);
+  }
+  return splits;
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -219,8 +261,8 @@ export default function CalculatorPage() {
   const pdStartVal = pdStartFull ? 1.0 : 0.5;
   const pdFinishVal = pdFinishFull ? 1.0 : 0.5;
 
+  let pdSplits: PayrollSplit[] = [];
   let pdTotalDays: number | null = null;
-  let pdPayroll: PayrollResult | null = null;
   let pdError: string | null = null;
 
   if (pdStartDate && pdFinishDate) {
@@ -229,18 +271,9 @@ export default function CalculatorPage() {
     if (finish < start) {
       pdError = 'Finish date must be on or after the start date.';
     } else {
-      const daysDiff = Math.round((finish.getTime() - start.getTime()) / 86400000);
-      if (daysDiff === 0) {
-        // Same day — count once using the start selection
-        pdTotalDays = pdStartVal;
-      } else {
-        // Middle days (exclusive of start/finish) all count as 1.0
-        pdTotalDays = pdStartVal + (daysDiff - 1) * 1.0 + pdFinishVal;
-      }
       try {
-        pdPayroll = pdPayrollType === 'monthly'
-          ? findMonthlyPayroll(finish)
-          : findFortnightlyPayroll(finish);
+        pdSplits = computePayrollSplits(start, finish, pdStartVal, pdFinishVal, pdPayrollType);
+        pdTotalDays = pdSplits.reduce((sum, s) => sum + s.days, 0);
       } catch {
         pdError = 'Could not determine payroll period.';
       }
@@ -603,28 +636,50 @@ export default function CalculatorPage() {
                           <p className="text-xs text-primary-foreground/50 font-medium mt-2">Single day ({pdStartFull ? 'full' : 'half'} day)</p>
                         ) : (
                           <p className="text-xs text-primary-foreground/50 font-medium mt-2">
-                            {pdStartFull ? '1' : '0.5'} (start) + {Math.round((parseDate(pdFinishDate).getTime() - parseDate(pdStartDate).getTime()) / 86400000) - 1} (full) + {pdFinishFull ? '1' : '0.5'} (finish)
+                            {formatUK(parseDate(pdStartDate))} → {formatUK(parseDate(pdFinishDate))}
+                            {pdSplits.length > 1 && <span className="ml-2 text-chart-1">· {pdSplits.length} payments</span>}
                           </p>
                         )}
                       </div>
 
-                      {/* Payroll details */}
-                      {pdPayroll && (
-                        <div className="space-y-3">
-                          <PayrollRow label="Payroll Type" value={pdPayrollType === 'monthly' ? 'Monthly' : 'Fortnightly'} />
-                          <PayrollRow label="Payroll Period" value={pdPayroll.periodLabel} />
-                          <PayrollRow label="Payroll Cut-off" value={formatUK(pdPayroll.cutoff)} highlight />
-                          <PayrollRow label="Expected Payday" value={formatUK(pdPayroll.payday)} highlight accent />
-                        </div>
-                      )}
-
-                      {/* Date range summary */}
-                      {pdStartDate && pdFinishDate && !pdError && (
-                        <div className="mt-2 pt-4 border-t border-primary-foreground/20 flex items-center justify-between text-primary-foreground/60 text-xs font-medium">
-                          <span>Travel period</span>
-                          <span className="font-mono">{formatUK(parseDate(pdStartDate))} → {formatUK(parseDate(pdFinishDate))}</span>
-                        </div>
-                      )}
+                      {/* Payment schedule — one card per payroll split */}
+                      <div className="space-y-3">
+                        <p className="text-xs font-bold uppercase tracking-widest text-primary-foreground/50 px-1">
+                          Payment Schedule
+                        </p>
+                        {pdSplits.map((split, idx) => (
+                          <div key={idx} className="bg-primary-foreground/10 rounded-xl overflow-hidden">
+                            {/* Period header */}
+                            <div className="flex items-center justify-between px-4 py-3 border-b border-primary-foreground/10">
+                              <span className="text-sm font-bold text-white">
+                                {pdPayrollType === 'fortnightly'
+                                  ? split.periodLabel
+                                  : `${formatUK(split.periodStart)} – ${formatUK(split.periodEnd)}`}
+                              </span>
+                              <span className="font-mono font-bold text-chart-1 text-base">
+                                {split.days % 1 === 0 ? split.days.toFixed(0) : split.days} days
+                              </span>
+                            </div>
+                            {/* Cut-off + Payday */}
+                            <div className="grid grid-cols-2 divide-x divide-primary-foreground/10">
+                              <div className="px-4 py-2.5">
+                                <p className="text-xs text-primary-foreground/50 font-medium mb-0.5">Cut-off</p>
+                                <p className="font-mono font-bold text-sm text-white">{formatUK(split.cutoff)}</p>
+                              </div>
+                              <div className="px-4 py-2.5">
+                                <p className="text-xs text-primary-foreground/50 font-medium mb-0.5">Payday</p>
+                                <p className="font-mono font-bold text-sm text-chart-1">{formatUK(split.payday)}</p>
+                              </div>
+                            </div>
+                            {/* Monthly period label (if monthly) */}
+                            {pdPayrollType === 'monthly' && (
+                              <div className="px-4 py-2 bg-primary-foreground/5 border-t border-primary-foreground/10">
+                                <span className="text-xs text-primary-foreground/50 font-medium">{split.periodLabel} payroll</span>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
