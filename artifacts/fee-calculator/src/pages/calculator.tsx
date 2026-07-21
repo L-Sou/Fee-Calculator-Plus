@@ -114,9 +114,10 @@ const FN_ANCHOR = new Date(2026, 0, 9);
 /** All fortnightly {payday, cutoff} pairs where cutoff >= start, up to and including the first cutoff >= finish */
 function getAllFortnightlyCutoffs(start: Date, finish: Date): Array<{ payday: Date; cutoff: Date }> {
   const diffDays = Math.round((start.getTime() - FN_ANCHOR.getTime()) / 86400000);
-  let idx = Math.max(0, Math.floor(diffDays / 14));
+  // No Math.max — allow negative indices so dates before the anchor (2026) work correctly
+  let idx = Math.floor(diffDays / 14);
   // Walk back if needed so we don't miss the first relevant cut-off
-  while (idx > 0 && sundayBefore(addDays(FN_ANCHOR, (idx - 1) * 14)).getTime() >= start.getTime()) idx--;
+  while (sundayBefore(addDays(FN_ANCHOR, (idx - 1) * 14)).getTime() >= start.getTime()) idx--;
   // Advance until cutoff >= start
   while (sundayBefore(addDays(FN_ANCHOR, idx * 14)).getTime() < start.getTime()) idx++;
   const results: Array<{ payday: Date; cutoff: Date }> = [];
