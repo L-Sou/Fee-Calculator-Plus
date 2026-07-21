@@ -151,15 +151,22 @@ function getAllMonthlyCutoffs(start: Date, finish: Date): Array<{ payday: Date; 
   let year = start.getFullYear();
   let month = start.getMonth();
   const results: Array<{ payday: Date; cutoff: Date }> = [];
+
   for (let i = 0; i < 25; i++) {
     const payday = monthlyPayday(year, month);
-    const cutoff = sundayBefore(payday);
+    const cutoff = new Date(year, month, 20); // 20th of the month
+
     if (cutoff.getTime() >= start.getTime()) {
       results.push({ payday, cutoff });
       if (cutoff.getTime() >= finish.getTime()) break;
     }
-    if (++month > 11) { month = 0; year++; }
+
+    if (++month > 11) {
+      month = 0;
+      year++;
+    }
   }
+
   return results;
 }
 
@@ -199,7 +206,10 @@ function computePayrollSplits(
         let year = lastEntry.payday.getFullYear();
         if (month > 11) { month = 0; year++; }
         const nextPayday = monthlyPayday(year, month);
-        cutoffs.push({ payday: nextPayday, cutoff: sundayBefore(nextPayday) });
+        cutoffs.push({
+          payday: nextPayday,
+          cutoff: new Date(year, month, 20),
+        });
       } else {
         break;
       }
