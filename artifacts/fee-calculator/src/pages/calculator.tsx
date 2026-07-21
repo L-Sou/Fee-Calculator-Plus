@@ -168,6 +168,13 @@ function getAllMonthlyCutoffs(start: Date, finish: Date): Array<{ payday: Date; 
  * Each split covers from the day after the previous cut-off to the next cut-off (or finish).
  * Only the overall first day uses startVal; only the overall last day uses finishVal.
  * All other days (including the first day of subsequent periods) count as 1.0.
+ *
+ * Monthly payroll periods are capped at a maximum of 31 payable days. A period can run
+ * longer than that in calendar terms when the previous month's payday was pulled earlier
+ * by a weekend/bank holiday (shortening that period) while the current month's payday
+ * lands on its normal date (lengthening this one) — when that happens, only 31 days are
+ * billed in this payment and the excess is carried forward onto the following month's
+ * payment instead.
  */
 function computePayrollSplits(
   start: Date, finish: Date, startVal: number, finishVal: number,
@@ -178,29 +185,68 @@ function computePayrollSplits(
     : getAllMonthlyCutoffs(start, finish);
   const splits: PayrollSplit[] = [];
   let periodStart = start;
-  for (let i = 0; i < cutoffs.length; i++) {
+  let carryDays = 0; // payable days over the 31/month cap, rolled into the next payment
+  let finishReached = false;
+  let i = 0;
+
+  while (true) {
+    if (i >= cutoffs.length) {
+      if (payrollType === 'monthly' && carryDays > 0) {
+        // The final period overflowed past the 31-day cap — extend the monthly
+        // schedule by one more payday purely to place the carried-over days.
+        const lastEntry = cutoffs[cutoffs.length - 1];
+        let month = lastEntry.payday.getMonth() + 1;
+        let year = lastEntry.payday.getFullYear();
+        if (month > 11) { month = 0; year++; }
+        const nextPayday = monthlyPayday(year, month);
+        cutoffs.push({ payday: nextPayday, cutoff: sundayBefore(nextPayday) });
+      } else {
+        break;
+      }
+    }
+
     const { payday, cutoff } = cutoffs[i];
     const isFirst = i === 0;
-    const isLast = cutoff.getTime() >= finish.getTime();
-    const periodEnd = isLast ? finish : cutoff;
-    const diff = Math.round((periodEnd.getTime() - periodStart.getTime()) / 86400000);
-    let days: number;
-    if (diff === 0) {
-      // Single-day period
-      days = isFirst ? startVal : isLast ? finishVal : 1.0;
+    let rawDays: number;
+    let periodEnd: Date;
+
+    if (finishReached) {
+      // Catch-up payment: no additional calendar days are worked here, it exists
+      // purely to pay out days carried over from an earlier, overflowing period.
+      periodEnd = cutoff;
+      rawDays = 0;
     } else {
-      const firstVal = isFirst ? startVal : 1.0;
-      const lastVal = isLast ? finishVal : 1.0;
-      days = firstVal + (diff - 1) + lastVal;
+      const isLast = cutoff.getTime() >= finish.getTime();
+      periodEnd = isLast ? finish : cutoff;
+      const diff = Math.round((periodEnd.getTime() - periodStart.getTime()) / 86400000);
+      if (diff === 0) {
+        // Single-day period
+        rawDays = isFirst ? startVal : isLast ? finishVal : 1.0;
+      } else {
+        const firstVal = isFirst ? startVal : 1.0;
+        const lastVal = isLast ? finishVal : 1.0;
+        rawDays = firstVal + (diff - 1) + lastVal;
+      }
+      if (isLast) finishReached = true;
     }
+
+    let days = rawDays + carryDays;
+    carryDays = 0;
+    if (payrollType === 'monthly' && days > 31) {
+      carryDays = days - 31;
+      days = 31;
+    }
+
     const m = payday.getMonth();
     const y = payday.getFullYear();
     const periodLabel = payrollType === 'monthly'
       ? `${MONTH_NAMES[m]} ${y}`
       : `${formatUK(periodStart)} – ${formatUK(periodEnd)}`;
     splits.push({ periodStart, periodEnd, cutoff, payday, periodLabel, days });
-    if (isLast) break;
+
+    if (finishReached && carryDays <= 0) break;
     periodStart = addDays(cutoff, 1);
+    i++;
   }
   return splits;
 }
