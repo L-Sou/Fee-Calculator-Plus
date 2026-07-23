@@ -421,6 +421,31 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
     showToast('Permanent summary copied');
   };
 
+  const exportScheduleCSV = () => {
+    if (!paydays.splits.length) return;
+    const headers = "Period,Cut-off,Payday,Payable Days,Subsistence Amount\n";
+    const subAmt = pdIncludeSubsistence ? (parseFloat(pdSubsistenceRate) || 0) : 0;
+
+    const rows = paydays.splits.map(s => 
+      `"${s.periodLabel}","${formatUK(s.cutoff)}","${formatUK(s.payday)}",${s.days},${s.days * subAmt}`
+    ).join("\n");
+
+    const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `payment_schedule_${pdStartDate}_to_${pdFinishDate}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('CSV Schedule Exported');
+  };
+
+  const printSchedule = () => {
+    window.print();
+    showToast('Preparing to print...');
+  };
+
   // ─── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-[100dvh] bg-background py-10 px-4 sm:px-6 md:px-8 flex flex-col items-center pb-28 md:pb-10">
@@ -902,6 +927,12 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                         {pdPayrollType === 'monthly' ? 'Monthly' : 'Fortnightly'}
                       </span>
                     </div>
+                    {paydays.splits.length > 0 && (
+                      <div className="flex items-center gap-2 print:hidden">
+                        <ActionButton onClick={printSchedule} icon={Printer} label="Print" />
+                        <ActionButton onClick={exportScheduleCSV} icon={Download} label="CSV" />
+                      </div>
+                    )}
                   </div>
 
                   {!pdStartDate || !pdFinishDate ? (
