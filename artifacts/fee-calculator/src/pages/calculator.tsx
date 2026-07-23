@@ -1,12 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
-import { Calculator, RotateCcw, Briefcase, FileText, UtensilsCrossed, PlaneTakeoff, CalendarDays } from 'lucide-react';
+import { Calculator, RotateCcw, Briefcase, FileText, UtensilsCrossed, PlaneTakeoff, CalendarDays, Globe, RefreshCw, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 // ─── Currency formatter ───────────────────────────────────────────────────────
 const formatCurrency = (val: number) =>
   new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP', minimumFractionDigits: 2 }).format(val);
+
+const formatCurrencyIn = (val: number, currency: string) =>
+  new Intl.NumberFormat('en-GB', { style: 'currency', currency, minimumFractionDigits: 2 }).format(val);
+
+const CURRENCIES = ['EUR', 'USD', 'GBP', 'CHF', 'AUD', 'CAD'] as const;
+type CurrencyCode = typeof CURRENCIES[number];
 
 // ─── Shared number input ──────────────────────────────────────────────────────
 const NumInput = ({
@@ -15,14 +21,18 @@ const NumInput = ({
   value: string; onChange: (v: string) => void; prefix?: string; suffix?: string; placeholder?: string;
 }) => (
   <div className="relative">
-    {prefix && <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono">{prefix}</span>}
+    {prefix && (
+      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono whitespace-nowrap pointer-events-none">
+        {prefix}
+      </span>
+    )}
     <input
       type="number"
       value={value}
       onChange={e => onChange(e.target.value)}
       className={cn(
         'w-full py-3 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all font-mono text-base font-medium',
-        prefix ? 'pl-10 pr-4' : suffix ? 'pl-4 pr-10' : 'px-4',
+        prefix ? (prefix.length > 1 ? 'pl-16 pr-4' : 'pl-10 pr-4') : suffix ? 'pl-4 pr-10' : 'px-4',
       )}
       placeholder={placeholder}
     />
@@ -284,6 +294,14 @@ export default function CalculatorPage() {
   const [placementFee, setPlacementFee] = useState('20');
   const [includePermNI, setIncludePermNI] = useState(false);
 
+  // Perm — currency conversion
+  const [pCurrency, setPCurrency] = useState<CurrencyCode>('GBP');
+  const [pFxDate, setPFxDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [pFxRate, setPFxRate] = useState<number | null>(null);
+  const [pFxLoading, setPFxLoading] = useState(false);
+  const [pFxError, setPFxError] = useState<string | null>(null);
+  const [pFxRefreshKey, setPFxRefreshKey] = useState(0);
+
   // Payment Days State
   const [pdPayrollType, setPdPayrollType] = useState<'monthly' | 'fortnightly'>('monthly');
   const [pdStartDate, setPdStartDate] = useState('');
@@ -300,10 +318,51 @@ export default function CalculatorPage() {
     setSubsistence(''); setIncludeSubsistence(false); setSubsistenceInFee(true);
     setIncludeTrip(false); setWorkingDays(''); setTravelDays(''); setTravelDayFull(false);
     setSalary('50000'); setPlacementFee('20'); setIncludePermNI(false);
+    setPCurrency('GBP'); setPFxDate(new Date().toISOString().slice(0, 10)); setPFxRate(null); setPFxError(null);
     setPdStartDate(''); setPdStartMode('full'); setPdStartCustomVal('0.5');
     setPdFinishDate(''); setPdFinishMode('full'); setPdFinishCustomVal('0.5');
     setPdIncludeSubsistence(false); setPdSubsistenceRate('');
   };
+
+  // ── FX rate fetch (Frankfurter API — free, no key, sourced from the ECB) ────
+  useEffect(() => {
+    if (pCurrency === 'GBP') {
+      setPFxRate(null);
+      setPFxError(null);
+      setPFxLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setPFxLoading(true);
+    setPFxError(null);
+    const today = new Date().toISOString().slice(0, 10);
+    const isFuture = pFxDate > today;
+    const datePart = isFuture ? 'latest' : pFxDate;
+
+    fetch(`https://api.frankfurter.dev/v1/${datePart}?base=${pCurrency}&symbols=GBP`)
+      .then(res => {
+        if (!res.ok) throw new Error('lookup failed');
+        return res.json();
+      })
+      .then(data => {
+        if (cancelled) return;
+        const rate = data?.rates?.GBP;
+        if (typeof rate === 'number') {
+          setPFxRate(rate);
+          if (isFuture) setPFxError('future-date-fallback');
+        } else {
+          setPFxError('No rate available for that date.');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setPFxError('Could not reach the exchange rate service.');
+      })
+      .finally(() => {
+        if (!cancelled) setPFxLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [pCurrency, pFxDate, pFxRefreshKey]);
 
   // ── Contract Calculations ──────────────────────────────────────────────────
   const cRate = parseFloat(consolidatedRate) || 0;
@@ -329,9 +388,11 @@ export default function CalculatorPage() {
   const tripGrandTotal = tripWorkingTotal + tripTravelTotal;
 
   // ── Perm Calculations ──────────────────────────────────────────────────────
-  const pSalary = parseFloat(salary) || 0;
+  const pSalaryInput = parseFloat(salary) || 0; // in pCurrency
+  const pFxReady = pCurrency === 'GBP' || pFxRate !== null;
+  const pSalary = pCurrency === 'GBP' ? pSalaryInput : (pFxRate !== null ? pSalaryInput * pFxRate : 0); // always GBP
   const pFeePct = parseFloat(placementFee) || 0;
-  const pPlacementFee = pSalary * (pFeePct / 100);
+  const pPlacementFee = pFxReady ? pSalary * (pFeePct / 100) : 0;
   const pEmployerNI = includePermNI ? Math.max(0, (pSalary - 9100) * 0.15) : 0;
   const pTotalCost = pPlacementFee + (includePermNI ? pEmployerNI : 0);
 
@@ -579,10 +640,81 @@ export default function CalculatorPage() {
               <div className="lg:col-span-5 space-y-6 bg-card border border-card-border p-7 rounded-2xl shadow-sm">
                 <h2 className="text-lg font-bold border-b border-border pb-4">Input Parameters</h2>
                 <div className="space-y-6">
+                  {/* Currency selector */}
                   <div className="space-y-2">
-                    <label className="block text-sm font-bold text-foreground">Candidate Annual Salary (£)</label>
-                    <NumInput value={salary} onChange={setSalary} prefix="£" />
+                    <label className="block text-sm font-bold text-foreground">Salary Currency</label>
+                    <div className="grid grid-cols-3 gap-1 p-1 bg-input/40 border border-input rounded-xl">
+                      {CURRENCIES.map(c => (
+                        <button
+                          key={c}
+                          onClick={() => setPCurrency(c)}
+                          className={cn('py-1.5 rounded-lg text-sm font-bold transition-all',
+                            pCurrency === c ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground')}
+                        >{c}</button>
+                      ))}
+                    </div>
                   </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-sm font-bold text-foreground">
+                      Candidate Annual Salary ({pCurrency})
+                    </label>
+                    <NumInput value={salary} onChange={setSalary} prefix={pCurrency} />
+                  </div>
+
+                  {/* FX conversion — only shown for non-GBP currencies */}
+                  {pCurrency !== 'GBP' && (
+                    <div className="space-y-3 p-4 bg-input/30 border border-input rounded-xl">
+                      <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+                        <Globe className="h-4 w-4" />Exchange Rate
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Placement / Start Date</label>
+                        <input
+                          type="date"
+                          value={pFxDate}
+                          onChange={e => setPFxDate(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg bg-card/60 px-3 py-2.5">
+                        <div className="text-sm font-medium">
+                          {pFxLoading ? (
+                            <span className="text-muted-foreground">Fetching rate…</span>
+                          ) : pFxRate !== null ? (
+                            <span className="font-mono font-bold">
+                              1 {pCurrency} = {pFxRate.toFixed(4)} GBP
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">No rate yet</span>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => setPFxRefreshKey(k => k + 1)}
+                          className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-input/60 transition-colors"
+                          title="Refresh rate"
+                        >
+                          <RefreshCw className={cn('h-3.5 w-3.5', pFxLoading && 'animate-spin')} />
+                        </button>
+                      </div>
+                      {pFxError === 'future-date-fallback' && (
+                        <div className="flex items-start gap-2 text-xs text-amber-500/90 font-medium">
+                          <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                          <span>That date is in the future — showing today's latest rate instead, since forward rates aren't published.</span>
+                        </div>
+                      )}
+                      {pFxError && pFxError !== 'future-date-fallback' && (
+                        <div className="flex items-start gap-2 text-xs text-red-400 font-medium">
+                          <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                          <span>{pFxError}</span>
+                        </div>
+                      )}
+                      <p className="text-xs text-muted-foreground font-medium">
+                        Rates from the European Central Bank via the Frankfurter API — a free daily reference rate, published on business days around 16:00 CET. Not the same feed as Oanda, but tracks it closely.
+                      </p>
+                    </div>
+                  )}
+
                   <div className="space-y-2">
                     <label className="block text-sm font-bold text-foreground">Placement Fee (%)</label>
                     <NumInput value={placementFee} onChange={setPlacementFee} suffix="%" placeholder="0.0" />
@@ -603,16 +735,30 @@ export default function CalculatorPage() {
                     <span className="text-xs uppercase tracking-widest font-bold px-3 py-1.5 bg-primary-foreground/10 rounded-full">Permanent</span>
                   </div>
                   <div className="space-y-5">
-                    <LineItem label="Annual Salary" value={pSalary} />
-                    <LineItem label={`Placement Fee (${pFeePct.toFixed(1)}%)`} value={pPlacementFee} isBold />
-                    {includePermNI && (<><div className="h-px bg-primary-foreground/20 my-4" /><LineItem label="Employer's NI on Salary" value={pEmployerNI} /></>)}
+                    <LineItem label={`Annual Salary (${pCurrency})`} value={pSalaryInput} currency={pCurrency} />
+                    {pCurrency !== 'GBP' && (
+                      <LineItem
+                        label={pFxRate !== null ? `Converted @ 1 ${pCurrency} = ${pFxRate.toFixed(4)} GBP` : 'Converted (awaiting rate…)'}
+                        value={pSalary}
+                      />
+                    )}
+                    {!pFxReady ? (
+                      <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 text-sm font-semibold text-amber-300">
+                        <AlertCircle className="h-4 w-4 shrink-0" />
+                        Waiting on the exchange rate to calculate the fee — check the date entered.
+                      </div>
+                    ) : (
+                      <LineItem label={`Placement Fee (${pFeePct.toFixed(1)}%)`} value={pPlacementFee} isBold />
+                    )}
+                    {includePermNI && pFxReady && (<><div className="h-px bg-primary-foreground/20 my-4" /><LineItem label="Employer's NI on Salary" value={pEmployerNI} /></>)}
                     <div className="mt-4 pt-5 border-t-2 border-primary-foreground/30">
                       <div className="flex items-center justify-between">
                         <span className="text-lg font-bold">Total Invoice to Client</span>
                         <span className="text-3xl font-mono font-bold tracking-tight text-chart-1">{formatCurrency(pPlacementFee)}</span>
                       </div>
+                      <p className="text-xs text-primary-foreground/50 font-medium mt-1">Invoiced in GBP regardless of salary currency.</p>
                     </div>
-                    {includePermNI && (
+                    {includePermNI && pFxReady && (
                       <div className="flex items-center justify-between mt-2 text-primary-foreground/70 bg-primary-foreground/5 p-4 rounded-xl border border-primary-foreground/10">
                         <span className="text-sm font-semibold">Total Cost to Client (inc. NI)</span>
                         <span className="font-mono text-base font-bold text-white">{formatCurrency(pTotalCost)}</span>
@@ -804,12 +950,12 @@ export default function CalculatorPage() {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function LineItem({ label, value, isBold = false }: { label: string; value: number; isBold?: boolean }) {
+function LineItem({ label, value, isBold = false, currency = 'GBP' }: { label: string; value: number; isBold?: boolean; currency?: string }) {
   return (
     <div className={cn('flex items-center justify-between', isBold ? 'text-white font-bold' : 'text-primary-foreground/80')}>
       <span className="text-sm font-medium">{label}</span>
       <span className={cn('font-mono tracking-tight', isBold ? 'text-base font-bold' : 'text-sm font-semibold')}>
-        {formatCurrency(value)}
+        {formatCurrencyIn(value, currency)}
       </span>
     </div>
   );
