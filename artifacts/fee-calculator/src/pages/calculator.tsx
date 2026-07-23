@@ -112,7 +112,7 @@ function useBankHolidays() {
 // ─── 4. Reusable Sub-components ───────────────────────────────────────────────
 
 const NumInput = ({ value, onChange, prefix, suffix, placeholder = '0.00', 'aria-label': ariaLabel }: any) => (
-  <div className="relative group">
+  <div className="relative group flex-1">
     {prefix && <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono pointer-events-none transition-colors group-focus-within:text-primary">{prefix}</span>}
     <input
       type="number" value={value} onChange={e => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder}
@@ -151,6 +151,7 @@ export default function CalculatorPage() {
 
   // Core Contract State
   const [consolidatedRate, setConsolidatedRate] = useState('');
+  const [feeType, setFeeType] = useLocalStorage<'percentage' | 'fixed'>('calc_fee_type', 'percentage');
   const [margin, setMargin] = useLocalStorage('calc_margin', '15');
   const [includeNI, setIncludeNI] = useLocalStorage('calc_inc_ni', true);
   const [seafarerExempt, setSeafarerExempt] = useLocalStorage('calc_sea_exempt', false);
@@ -163,10 +164,13 @@ export default function CalculatorPage() {
 
   // Hitch & Logistics State
   const [includeTrip, setIncludeTrip] = useLocalStorage('calc_inc_trip', false);
-  const [workingDays, setWorkingDays] = useState('28'); // Default Hitch Days
+  const [workingDays, setWorkingDays] = useState('28'); 
+
+  // Separate Travel Fee State
   const [travelDays, setTravelDays] = useState('2');
   const [travelDayFull, setTravelDayFull] = useLocalStorage('calc_travel_full', false);
-  const [rotationOffDays, setRotationOffDays] = useState('28');
+  const [travelFeeType, setTravelFeeType] = useLocalStorage<'percentage' | 'fixed'>('calc_travel_fee_type', 'percentage');
+  const [travelFee, setTravelFee] = useLocalStorage('calc_travel_fee', '15');
 
   // Mob/Demob Costs
   const [mobFlights, setMobFlights] = useState('');
@@ -199,7 +203,7 @@ export default function CalculatorPage() {
   const [pFxRefreshKey, setPFxRefreshKey] = useState(0);
 
   const reset = () => {
-    setConsolidatedRate(''); setWorkingDays('28'); setTravelDays('2'); setRotationOffDays('28');
+    setConsolidatedRate(''); setWorkingDays('28'); setTravelDays('2');
     setMobFlights(''); setMobVisas(''); setMobAgent(''); setSalary('50000');
     setPdStartDate(''); setPdFinishDate('');
     showToast('Session values reset. Settings preserved.');
@@ -229,7 +233,8 @@ export default function CalculatorPage() {
 
   const contract = useMemo(() => {
     const cRate = parseFloat(consolidatedRate) || 0;
-    const cMargin = parseFloat(margin) || 0;
+    const cMarginVal = parseFloat(margin) || 0;
+    const cTravelFeeVal = parseFloat(travelFee) || 0;
     const cNiMultiplier = (includeNI && !seafarerExempt) ? 0.155 : 0;
 
     // Subsistence values
@@ -239,53 +244,45 @@ export default function CalculatorPage() {
     // Daily Onboard Charge
     const cEmployerNI = cRate * cNiMultiplier;
     const cFeeBase = cRate + cEmployerNI + (subsistenceInFee ? cSubOnboardAmt : 0);
-    const cManagementFee = cFeeBase * (cMargin / 100);
+    const cManagementFee = feeType === 'percentage' ? cFeeBase * (cMarginVal / 100) : cMarginVal;
     const cTotalCharge = cRate + cEmployerNI + cSubOnboardAmt + cManagementFee;
 
     // Daily Transit Charge
     const cTravelRate = cRate * (travelDayFull ? 1 : 0.5);
     const cTravelNI = cTravelRate * cNiMultiplier;
     const cTravelFeeBase = cTravelRate + cTravelNI + (subsistenceInFee ? cSubTransitAmt : 0);
-    const cTravelManagementFee = cTravelFeeBase * (cMargin / 100);
+    const cTravelManagementFee = travelFeeType === 'percentage' ? cTravelFeeBase * (cTravelFeeVal / 100) : cTravelFeeVal;
     const cTravelDayCharge = cTravelRate + cTravelNI + cSubTransitAmt + cTravelManagementFee;
 
     // Hitch Totals
     const nWorkingDays = Math.max(0, parseInt(workingDays) || 0);
     const nTravelDays = Math.max(0, parseInt(travelDays) || 0);
-    const nOffDays = Math.max(0, parseInt(rotationOffDays) || 0);
 
     // Logistics
     const fFlights = parseFloat(mobFlights) || 0;
     const fVisas = parseFloat(mobVisas) || 0;
     const fAgent = parseFloat(mobAgent) || 0;
     const logisticsBase = fFlights + fVisas + fAgent;
-    const logisticsFee = logisticsInFee ? (logisticsBase * (cMargin / 100)) : 0;
+
+    // Auto-determine the margin % to apply to logistics based on selected fee types
+    const logisticsPct = travelFeeType === 'percentage' ? cTravelFeeVal : (feeType === 'percentage' ? cMarginVal : 0);
+    const logisticsFee = logisticsInFee ? (logisticsBase * (logisticsPct / 100)) : 0;
     const logisticsTotal = logisticsBase + logisticsFee;
 
     const tripWorkingTotal = nWorkingDays * cTotalCharge;
     const tripTravelTotal = nTravelDays * cTravelDayCharge;
     const tripGrandTotal = tripWorkingTotal + tripTravelTotal + logisticsTotal;
 
-    // Rotation Projections
-    const rotationCycleDays = nWorkingDays + nOffDays;
-    const cyclesPerYear = rotationCycleDays > 0 ? 365 / rotationCycleDays : 0;
-    const annualDaysOnboard = cyclesPerYear * nWorkingDays;
-    const annualDaysTransit = cyclesPerYear * nTravelDays;
-
-    const projAnnualCharge = (annualDaysOnboard * cTotalCharge) + (annualDaysTransit * cTravelDayCharge) + (cyclesPerYear * logisticsTotal);
-    const projAnnualFee = (annualDaysOnboard * cManagementFee) + (annualDaysTransit * cTravelManagementFee) + (cyclesPerYear * logisticsFee);
-
     return {
-      cRate, cMargin, cEmployerNI, cTotalCharge, cManagementFee,
+      cRate, cMarginVal, feeType, cEmployerNI, cTotalCharge, cManagementFee,
       cSubTransitAmt, cSubOnboardAmt,
-      cTravelRate, cTravelNI, cTravelManagementFee, cTravelDayCharge,
-      nWorkingDays, nTravelDays, nOffDays,
-      logisticsBase, logisticsFee, logisticsTotal,
+      cTravelRate, cTravelNI, cTravelFeeVal, travelFeeType, cTravelManagementFee, cTravelDayCharge,
+      nWorkingDays, nTravelDays,
+      logisticsBase, logisticsFee, logisticsTotal, logisticsPct,
       tripWorkingTotal, tripTravelTotal, tripGrandTotal,
-      projAnnualCharge, projAnnualFee, annualDaysOnboard,
       totalBarVal: Math.max(cTotalCharge, 1)
     };
-  }, [consolidatedRate, margin, includeNI, seafarerExempt, subsistenceTransit, subsistenceOnboard, includeSubsistence, subsistenceInFee, travelDayFull, workingDays, travelDays, rotationOffDays, mobFlights, mobVisas, mobAgent, logisticsInFee]);
+  }, [consolidatedRate, feeType, margin, includeNI, seafarerExempt, subsistenceTransit, subsistenceOnboard, includeSubsistence, subsistenceInFee, travelDayFull, travelFeeType, travelFee, workingDays, travelDays, mobFlights, mobVisas, mobAgent, logisticsInFee]);
 
   const perm = useMemo(() => {
     const pSalaryInput = parseFloat(salary) || 0;
@@ -392,7 +389,7 @@ export default function CalculatorPage() {
     const text = `Maritime Contract Charge Breakdown (Per Day)
 -----------------------------------
 Consolidated Rate: ${formatCurrency(contract.cRate)}
-${includeNI && !seafarerExempt ? `Employer's NIC: ${formatCurrency(contract.cEmployerNI)}\n` : ''}${seafarerExempt ? `Employer's NIC: Exempt (Seafarer/Non-UKCS)\n` : ''}${includeSubsistence && contract.cSubOnboardAmt > 0 ? `Victualling/Onboard Subsistence: ${formatCurrency(contract.cSubOnboardAmt)}\n` : ''}Management Fee (${contract.cMargin}%): ${formatCurrency(contract.cManagementFee)}
+${includeNI && !seafarerExempt ? `Employer's NIC: ${formatCurrency(contract.cEmployerNI)}\n` : ''}${seafarerExempt ? `Employer's NIC: Exempt (Seafarer/Non-UKCS)\n` : ''}${includeSubsistence && contract.cSubOnboardAmt > 0 ? `Victualling/Onboard Subsistence: ${formatCurrency(contract.cSubOnboardAmt)}\n` : ''}Management Fee (${contract.feeType === 'percentage' ? `${contract.cMarginVal}%` : 'Fixed'}): ${formatCurrency(contract.cManagementFee)}
 -----------------------------------
 Total Charge Rate (Onboard): ${formatCurrency(contract.cTotalCharge)}`;
     navigator.clipboard.writeText(text);
@@ -481,10 +478,28 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                     <label className="block text-sm font-bold">Consolidated Rate — Seafarer Pay (£/day)</label>
                     <NumInput value={consolidatedRate} onChange={setConsolidatedRate} prefix="£" aria-label="Consolidated Rate" />
                   </div>
+
                   <div className="space-y-2">
-                    <label className="block text-sm font-bold">Management Fee (%)</label>
-                    <NumInput value={margin} onChange={setMargin} suffix="%" placeholder="0.0" />
+                    <div className="flex items-center justify-between">
+                      <label className="block text-sm font-bold">Management Fee</label>
+                      <div className="w-32">
+                        <SegmentedControl 
+                          value={feeType} 
+                          onChange={setFeeType} 
+                          options={[{label: '%', value: 'percentage'}, {label: '£', value: 'fixed'}]} 
+                          ariaLabel="Management Fee Type"
+                        />
+                      </div>
+                    </div>
+                    <NumInput 
+                      value={margin} 
+                      onChange={setMargin} 
+                      prefix={feeType === 'fixed' ? '£' : undefined} 
+                      suffix={feeType === 'percentage' ? '%' : undefined} 
+                      placeholder="0.0" 
+                    />
                   </div>
+
                   <div className="pt-4 space-y-4 border-t border-border/60">
                     <div className="flex justify-between group">
                       <div className="space-y-1 pr-4">
@@ -544,26 +559,48 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                   </div>
 
                   <div className={cn('space-y-5 transition-all duration-300', !includeTrip && 'opacity-40 pointer-events-none scale-[0.98] h-0 overflow-hidden !my-0')}>
-                    <div className="grid grid-cols-2 gap-4 pt-2">
+                    <div className="pt-2">
                       <div className="space-y-2">
                         <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Days Onboard</label>
                         <NumInput value={workingDays} onChange={setWorkingDays} placeholder="28" />
                       </div>
-                      <div className="space-y-2">
-                        <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Leave Days</label>
-                        <NumInput value={rotationOffDays} onChange={setRotationOffDays} placeholder="28" />
-                      </div>
                     </div>
 
-                    <div className="space-y-2 pt-2 border-t border-border/50">
-                      <label className="block text-sm font-bold">Transit / Travel Days</label>
+                    <div className="space-y-4 pt-4 border-t border-border/50">
                       <div className="grid grid-cols-2 gap-4">
-                        <NumInput value={travelDays} onChange={setTravelDays} placeholder="2" />
-                        <SegmentedControl 
-                          value={travelDayFull ? 'full' : 'half'} 
-                          onChange={(v) => setTravelDayFull(v === 'full')} 
-                          options={[{label: '0.5 rate', value: 'half'}, {label: 'Full rate', value: 'full'}]} 
-                          ariaLabel="Travel Day Rate"
+                        <div className="space-y-2">
+                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel Days</label>
+                          <NumInput value={travelDays} onChange={setTravelDays} placeholder="2" />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Charge Rate</label>
+                          <SegmentedControl 
+                            value={travelDayFull ? 'full' : 'half'} 
+                            onChange={(v) => setTravelDayFull(v === 'full')} 
+                            options={[{label: '0.5 rate', value: 'half'}, {label: 'Full rate', value: 'full'}]} 
+                            ariaLabel="Travel Day Rate"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 pt-2">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Transit Management Fee</label>
+                          <div className="w-28">
+                            <SegmentedControl 
+                              value={travelFeeType} 
+                              onChange={setTravelFeeType} 
+                              options={[{label: '%', value: 'percentage'}, {label: '£', value: 'fixed'}]} 
+                              ariaLabel="Transit Management Fee Type"
+                            />
+                          </div>
+                        </div>
+                        <NumInput 
+                          value={travelFee} 
+                          onChange={setTravelFee} 
+                          prefix={travelFeeType === 'fixed' ? '£' : undefined} 
+                          suffix={travelFeeType === 'percentage' ? '%' : undefined} 
+                          placeholder="0.0" 
                         />
                       </div>
                     </div>
@@ -572,7 +609,9 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                       <div className="flex items-center justify-between">
                         <label className="block text-sm font-bold">Logistics Costs (Mob/Demob)</label>
                         <div className="flex items-center gap-2">
-                          <label className="text-xs font-bold text-muted-foreground cursor-pointer" onClick={() => setLogisticsInFee(!logisticsInFee)}>Add Margin</label>
+                          <label className="text-xs font-bold text-muted-foreground cursor-pointer" onClick={() => setLogisticsInFee(!logisticsInFee)}>
+                            {contract.logisticsPct > 0 ? `Add ${contract.logisticsPct}% Margin` : 'Add Margin'}
+                          </label>
                           <Switch checked={logisticsInFee} onCheckedChange={setLogisticsInFee} className="scale-75 origin-right" />
                         </div>
                       </div>
@@ -627,14 +666,14 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                       />
                     )}
                     {includeSubsistence && contract.cSubOnboardAmt > 0 && <LineItem label="Onboard Victualling/Sub" value={contract.cSubOnboardAmt} />}
-                    <LineItem label={`Management Fee (${contract.cMargin > 0 ? `${contract.cMargin}%` : '—'})`} value={contract.cManagementFee} />
+                    <LineItem label={`Management Fee (${contract.feeType === 'percentage' && contract.cMarginVal > 0 ? `${contract.cMarginVal}%` : 'Fixed'})`} value={contract.cManagementFee} />
 
-                    {contract.cMargin > 0 && contract.cTotalCharge > 0 && (
+                    {contract.cMarginVal > 0 && contract.cTotalCharge > 0 && (
                       <div className="text-xs text-primary-foreground/60 font-medium bg-primary-foreground/5 p-2.5 rounded-lg mt-1 inline-flex items-center gap-2">
                         <Info className="h-3.5 w-3.5 shrink-0" />
-                        Fee = {contract.cMargin}% × ({formatCurrency(contract.cRate)} 
-                        {includeNI && !seafarerExempt ? ` + ${formatCurrency(contract.cEmployerNI)} NI` : ''} 
-                        {subsistenceInFee && contract.cSubOnboardAmt > 0 ? ` + ${formatCurrency(contract.cSubOnboardAmt)} Sub` : ''})
+                        Fee = {contract.feeType === 'percentage' 
+                          ? `${contract.cMarginVal}% × (${formatCurrency(contract.cRate)} ${includeNI && !seafarerExempt ? ` + NI` : ''} ${subsistenceInFee && contract.cSubOnboardAmt > 0 ? ` + Sub` : ''})` 
+                          : `${formatCurrency(contract.cMarginVal)} Flat`}
                       </div>
                     )}
 
@@ -656,7 +695,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                         <LineItem label={`Consolidated Rate (×${travelDayFull ? '1' : '0.5'})`} value={contract.cTravelRate} />
                         {includeNI && !seafarerExempt && <LineItem label="Employers NIC on travel rate" value={contract.cTravelNI} />}
                         {includeSubsistence && contract.cSubTransitAmt > 0 && <LineItem label="Transit Subsistence (full)" value={contract.cSubTransitAmt} />}
-                        <LineItem label={`Management Fee (${contract.cMargin > 0 ? `${contract.cMargin}%` : '—'})`} value={contract.cTravelManagementFee} />
+                        <LineItem label={`Transit Fee (${contract.travelFeeType === 'percentage' && contract.cTravelFeeVal > 0 ? `${contract.cTravelFeeVal}%` : 'Fixed'})`} value={contract.cTravelManagementFee} />
                         <div className="pt-3 border-t border-primary-foreground/20 flex items-center justify-between">
                           <span className="text-sm font-bold">Transit Day Total</span>
                           <span className="font-mono font-bold text-base text-chart-1 transition-all" key={contract.cTravelDayCharge}>{formatCurrency(contract.cTravelDayCharge)}</span>
@@ -690,7 +729,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                             <span className="text-primary-foreground/50 font-medium">{contract.nTravelDays} × {formatCurrency(contract.cTravelDayCharge)}</span>
                           </div>
                           <div className="flex items-center justify-between">
-                            <span className="text-xs text-primary-foreground/50 font-medium">{travelDayFull ? 'Full' : '0.5'} rate + transit sub</span>
+                            <span className="text-xs text-primary-foreground/50 font-medium">{travelDayFull ? 'Full' : '0.5'} rate + transit sub & fee</span>
                             <span className="font-mono font-bold transition-all" key={contract.tripTravelTotal}>{formatCurrency(contract.tripTravelTotal)}</span>
                           </div>
                         </div>
@@ -702,7 +741,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                             </div>
                             <span className="text-xs text-primary-foreground/50 font-medium">
                               Flights: £{mobFlights || '0'} | Visas: £{mobVisas || '0'} | Agent: £{mobAgent || '0'} 
-                              {logisticsInFee && ` | Fee: ${formatCurrency(contract.logisticsFee)}`}
+                              {logisticsInFee && contract.logisticsFee > 0 && ` | ${contract.logisticsPct}% Fee: ${formatCurrency(contract.logisticsFee)}`}
                             </span>
                           </div>
                         )}
@@ -722,25 +761,6 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                         <ProjectionCard label="Weekly" days={5} charge={contract.cTotalCharge} fee={contract.cManagementFee} />
                         <ProjectionCard label="Monthly" days={21} charge={contract.cTotalCharge} fee={contract.cManagementFee} />
                         <ProjectionCard label="Annual" days={230} charge={contract.cTotalCharge} fee={contract.cManagementFee} />
-                      </div>
-                      <p className="text-xs text-primary-foreground/40 mt-4 text-center">Enable the Hitch Scheduler to see rotation-specific annual projections.</p>
-                    </div>
-                  )}
-
-                  {includeTrip && contract.nOffDays > 0 && (
-                    <div className="mt-6 pt-6 border-t border-primary-foreground/10">
-                      <h3 className="text-xs font-bold uppercase tracking-widest text-primary-foreground/60 mb-4">Annual Rotation Projection ({contract.nWorkingDays} On / {contract.nOffDays} Off)</h3>
-                      <div className="flex justify-between text-sm mb-2">
-                        <span className="text-primary-foreground/70">Projected Days Onboard / Yr</span>
-                        <span className="font-mono font-bold text-white">{contract.annualDaysOnboard.toFixed(1)} days</span>
-                      </div>
-                      <div className="flex justify-between text-sm mb-2">
-                        <span className="text-primary-foreground/70">Projected Annual Revenue</span>
-                        <span className="font-mono font-bold text-chart-1">{formatCurrency(contract.projAnnualCharge)}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-primary-foreground/70">Projected Annual Gross Margin</span>
-                        <span className="font-mono font-bold text-white">{formatCurrency(contract.projAnnualFee)}</span>
                       </div>
                     </div>
                   )}
@@ -1069,10 +1089,6 @@ function AssumptionsAccordion({ maritime = false }: { maritime?: boolean }) {
             <div className="space-y-1">
               <strong className="text-foreground block">Subsistence Rules (Transit vs Victualling)</strong>
               <p>Transit subsistence is only applied to travel days. Onboard subsistence (victualling) is applied to working days. In maritime, onboard subsistence is typically £0 as room and board are provided by the vessel.</p>
-            </div>
-            <div className="space-y-1">
-              <strong className="text-foreground block">Rotation Projections</strong>
-              <p>Annual projections are calculated by taking 365 days, dividing by the total hitch cycle (Days On + Leave Days), and multiplying the cycles by the respective charges.</p>
             </div>
           </>
         ) : (
