@@ -162,17 +162,17 @@ export default function CalculatorPage() {
   const [subsistenceOnboard, setSubsistenceOnboard] = useLocalStorage('calc_sub_onboard', '0');
   const [subsistenceInFee, setSubsistenceInFee] = useLocalStorage('calc_sub_in_fee', true);
 
-  // Hitch & Logistics State
+  // Hitch & Travel State
   const [includeTrip, setIncludeTrip] = useLocalStorage('calc_inc_trip', false);
   const [workingDays, setWorkingDays] = useState('28'); 
-
-  // Separate Travel Fee State
   const [travelDays, setTravelDays] = useState('2');
   const [travelDayFull, setTravelDayFull] = useLocalStorage('calc_travel_full', false);
+
+  // Separate Travel Fee State (Applied only to Logistics/Costs)
   const [travelFeeType, setTravelFeeType] = useLocalStorage<'percentage' | 'fixed'>('calc_travel_fee_type', 'percentage');
   const [travelFee, setTravelFee] = useLocalStorage('calc_travel_fee', '15');
 
-  // Mob/Demob Costs
+  // Travel & Logistics Costs
   const [mobFlights, setMobFlights] = useState('');
   const [mobVisas, setMobVisas] = useState('');
   const [mobAgent, setMobAgent] = useState('');
@@ -247,26 +247,27 @@ export default function CalculatorPage() {
     const cManagementFee = feeType === 'percentage' ? cFeeBase * (cMarginVal / 100) : cMarginVal;
     const cTotalCharge = cRate + cEmployerNI + cSubOnboardAmt + cManagementFee;
 
-    // Daily Transit Charge
+    // Daily Travel Charge (Uses Main Management Fee)
     const cTravelRate = cRate * (travelDayFull ? 1 : 0.5);
     const cTravelNI = cTravelRate * cNiMultiplier;
     const cTravelFeeBase = cTravelRate + cTravelNI + (subsistenceInFee ? cSubTransitAmt : 0);
-    const cTravelManagementFee = travelFeeType === 'percentage' ? cTravelFeeBase * (cTravelFeeVal / 100) : cTravelFeeVal;
+    const cTravelManagementFee = feeType === 'percentage' ? cTravelFeeBase * (cMarginVal / 100) : cMarginVal;
     const cTravelDayCharge = cTravelRate + cTravelNI + cSubTransitAmt + cTravelManagementFee;
 
     // Hitch Totals
     const nWorkingDays = Math.max(0, parseInt(workingDays) || 0);
     const nTravelDays = Math.max(0, parseInt(travelDays) || 0);
 
-    // Logistics
-    const fFlights = parseFloat(mobFlights) || 0;
+    // Logistics & Travel Costs (Where the separate Travel Fee is applied)
+    const fTravel = parseFloat(mobFlights) || 0;
     const fVisas = parseFloat(mobVisas) || 0;
     const fAgent = parseFloat(mobAgent) || 0;
-    const logisticsBase = fFlights + fVisas + fAgent;
+    const logisticsBase = fTravel + fVisas + fAgent;
 
-    // Auto-determine the margin % to apply to logistics based on selected fee types
-    const logisticsPct = travelFeeType === 'percentage' ? cTravelFeeVal : (feeType === 'percentage' ? cMarginVal : 0);
-    const logisticsFee = logisticsInFee ? (logisticsBase * (logisticsPct / 100)) : 0;
+    // Apply the dedicated Travel Fee exclusively to these travel costs
+    const logisticsFee = logisticsInFee 
+      ? (travelFeeType === 'percentage' ? logisticsBase * (cTravelFeeVal / 100) : cTravelFeeVal) 
+      : 0;
     const logisticsTotal = logisticsBase + logisticsFee;
 
     const tripWorkingTotal = nWorkingDays * cTotalCharge;
@@ -278,7 +279,7 @@ export default function CalculatorPage() {
       cSubTransitAmt, cSubOnboardAmt,
       cTravelRate, cTravelNI, cTravelFeeVal, travelFeeType, cTravelManagementFee, cTravelDayCharge,
       nWorkingDays, nTravelDays,
-      logisticsBase, logisticsFee, logisticsTotal, logisticsPct,
+      logisticsBase, logisticsFee, logisticsTotal,
       tripWorkingTotal, tripTravelTotal, tripGrandTotal,
       totalBarVal: Math.max(cTotalCharge, 1)
     };
@@ -400,8 +401,8 @@ Total Charge Rate (Onboard): ${formatCurrency(contract.cTotalCharge)}`;
     const text = `Hitch & Crew Change Invoice Summary
 -----------------------------------
 Hitch Days (${contract.nWorkingDays}): ${formatCurrency(contract.tripWorkingTotal)}
-Transit Days (${contract.nTravelDays}): ${formatCurrency(contract.tripTravelTotal)}
-${contract.logisticsTotal > 0 ? `Mob/Demob Logistics: ${formatCurrency(contract.logisticsTotal)}\n` : ''}-----------------------------------
+Travel Days (${contract.nTravelDays}): ${formatCurrency(contract.tripTravelTotal)}
+${contract.logisticsTotal > 0 ? `Travel & Logistics Costs: ${formatCurrency(contract.logisticsTotal)}\n` : ''}-----------------------------------
 Total Hitch Invoice: ${formatCurrency(contract.tripGrandTotal)}`;
     navigator.clipboard.writeText(text);
     showToast('Hitch summary copied');
@@ -531,7 +532,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                   <div className={cn('space-y-5 transition-all', !includeSubsistence && 'opacity-40 pointer-events-none h-0 overflow-hidden !my-0')}>
                     <div className="grid grid-cols-2 gap-4 pt-2">
                       <div className="space-y-2">
-                        <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Transit (£/day)</label>
+                        <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel (£/day)</label>
                         <NumInput value={subsistenceTransit} onChange={setSubsistenceTransit} prefix="£" />
                       </div>
                       <div className="space-y-2">
@@ -582,44 +583,46 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                           />
                         </div>
                       </div>
-
-                      <div className="space-y-2 pt-2">
-                        <div className="flex items-center justify-between">
-                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Transit Management Fee</label>
-                          <div className="w-28">
-                            <SegmentedControl 
-                              value={travelFeeType} 
-                              onChange={setTravelFeeType} 
-                              options={[{label: '%', value: 'percentage'}, {label: '£', value: 'fixed'}]} 
-                              ariaLabel="Transit Management Fee Type"
-                            />
-                          </div>
-                        </div>
-                        <NumInput 
-                          value={travelFee} 
-                          onChange={setTravelFee} 
-                          prefix={travelFeeType === 'fixed' ? '£' : undefined} 
-                          suffix={travelFeeType === 'percentage' ? '%' : undefined} 
-                          placeholder="0.0" 
-                        />
-                      </div>
                     </div>
 
                     <div className="space-y-3 pt-4 border-t border-border/50">
                       <div className="flex items-center justify-between">
-                        <label className="block text-sm font-bold">Logistics Costs (Mob/Demob)</label>
+                        <label className="block text-sm font-bold">Travel & Logistics Costs</label>
                         <div className="flex items-center gap-2">
                           <label className="text-xs font-bold text-muted-foreground cursor-pointer" onClick={() => setLogisticsInFee(!logisticsInFee)}>
-                            {contract.logisticsPct > 0 ? `Add ${contract.logisticsPct}% Margin` : 'Add Margin'}
+                            Add Travel Fee
                           </label>
                           <Switch checked={logisticsInFee} onCheckedChange={setLogisticsInFee} className="scale-75 origin-right" />
                         </div>
                       </div>
                       <div className="grid grid-cols-3 gap-2">
-                        <NumInput value={mobFlights} onChange={setMobFlights} placeholder="Flights" prefix="£" />
-                        <NumInput value={mobVisas} onChange={setMobVisas} placeholder="Visas" prefix="£" />
+                        <NumInput value={mobFlights} onChange={setMobFlights} placeholder="Travel" prefix="£" />
+                        <NumInput value={mobVisas} onChange={setMobVisas} placeholder="VISA / Cert." prefix="£" />
                         <NumInput value={mobAgent} onChange={setMobAgent} placeholder="Agent" prefix="£" />
                       </div>
+
+                      {logisticsInFee && (
+                        <div className="space-y-2 pt-2 animate-in fade-in">
+                          <div className="flex items-center justify-between">
+                            <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel Fee</label>
+                            <div className="w-28">
+                              <SegmentedControl 
+                                value={travelFeeType} 
+                                onChange={setTravelFeeType} 
+                                options={[{label: '%', value: 'percentage'}, {label: '£', value: 'fixed'}]} 
+                                ariaLabel="Travel Fee Type"
+                              />
+                            </div>
+                          </div>
+                          <NumInput 
+                            value={travelFee} 
+                            onChange={setTravelFee} 
+                            prefix={travelFeeType === 'fixed' ? '£' : undefined} 
+                            suffix={travelFeeType === 'percentage' ? '%' : undefined} 
+                            placeholder="0.0" 
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -688,16 +691,16 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                   {includeTrip && (
                     <div className="mt-8 pt-6 border-t border-primary-foreground/20 animate-in fade-in slide-in-from-top-4 duration-300">
                       <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-sm font-bold uppercase tracking-widest text-primary-foreground/60">Transit Day Rate</h3>
+                        <h3 className="text-sm font-bold uppercase tracking-widest text-primary-foreground/60">Travel Day Rate</h3>
                         <span className="text-xs font-bold px-2.5 py-1 bg-primary-foreground/10 rounded-full">{travelDayFull ? 'Full' : '0.5'} day</span>
                       </div>
                       <div className="space-y-2.5">
                         <LineItem label={`Consolidated Rate (×${travelDayFull ? '1' : '0.5'})`} value={contract.cTravelRate} />
                         {includeNI && !seafarerExempt && <LineItem label="Employers NIC on travel rate" value={contract.cTravelNI} />}
-                        {includeSubsistence && contract.cSubTransitAmt > 0 && <LineItem label="Transit Subsistence (full)" value={contract.cSubTransitAmt} />}
-                        <LineItem label={`Transit Fee (${contract.travelFeeType === 'percentage' && contract.cTravelFeeVal > 0 ? `${contract.cTravelFeeVal}%` : 'Fixed'})`} value={contract.cTravelManagementFee} />
+                        {includeSubsistence && contract.cSubTransitAmt > 0 && <LineItem label="Travel Subsistence (full)" value={contract.cSubTransitAmt} />}
+                        <LineItem label={`Management Fee (${contract.feeType === 'percentage' && contract.cMarginVal > 0 ? `${contract.cMarginVal}%` : 'Fixed'})`} value={contract.cTravelManagementFee} />
                         <div className="pt-3 border-t border-primary-foreground/20 flex items-center justify-between">
-                          <span className="text-sm font-bold">Transit Day Total</span>
+                          <span className="text-sm font-bold">Travel Day Total</span>
                           <span className="font-mono font-bold text-base text-chart-1 transition-all" key={contract.cTravelDayCharge}>{formatCurrency(contract.cTravelDayCharge)}</span>
                         </div>
                       </div>
@@ -725,23 +728,23 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                         </div>
                         <div className="bg-primary-foreground/5 p-4 rounded-xl space-y-2 hover:bg-primary-foreground/10 transition-colors">
                           <div className="flex items-center justify-between text-sm font-bold text-primary-foreground/80">
-                            <span>Transit Days</span>
+                            <span>Travel Days</span>
                             <span className="text-primary-foreground/50 font-medium">{contract.nTravelDays} × {formatCurrency(contract.cTravelDayCharge)}</span>
                           </div>
                           <div className="flex items-center justify-between">
-                            <span className="text-xs text-primary-foreground/50 font-medium">{travelDayFull ? 'Full' : '0.5'} rate + transit sub & fee</span>
+                            <span className="text-xs text-primary-foreground/50 font-medium">{travelDayFull ? 'Full' : '0.5'} rate + travel sub & fee</span>
                             <span className="font-mono font-bold transition-all" key={contract.tripTravelTotal}>{formatCurrency(contract.tripTravelTotal)}</span>
                           </div>
                         </div>
                         {contract.logisticsTotal > 0 && (
                           <div className="bg-primary-foreground/5 p-4 rounded-xl flex flex-col gap-2 hover:bg-primary-foreground/10 transition-colors">
                             <div className="flex items-center justify-between text-sm font-bold text-primary-foreground/80">
-                              <span>Mob/Demob Logistics</span>
+                              <span>Travel & Logistics Costs</span>
                               <span className="font-mono font-bold transition-all" key={contract.logisticsTotal}>{formatCurrency(contract.logisticsTotal)}</span>
                             </div>
                             <span className="text-xs text-primary-foreground/50 font-medium">
-                              Flights: £{mobFlights || '0'} | Visas: £{mobVisas || '0'} | Agent: £{mobAgent || '0'} 
-                              {logisticsInFee && contract.logisticsFee > 0 && ` | ${contract.logisticsPct}% Fee: ${formatCurrency(contract.logisticsFee)}`}
+                              Travel: £{mobFlights || '0'} | VISA / Cert.: £{mobVisas || '0'} | Agent: £{mobAgent || '0'} 
+                              {logisticsInFee && contract.logisticsFee > 0 && ` | ${contract.travelFeeType === 'percentage' ? contract.cTravelFeeVal + '%' : 'Fixed'} Fee: ${formatCurrency(contract.logisticsFee)}`}
                             </span>
                           </div>
                         )}
@@ -1087,8 +1090,8 @@ function AssumptionsAccordion({ maritime = false }: { maritime?: boolean }) {
               <p>Standard NI is calculated at 15.5%. When "Seafarer Exemption" is toggled, Employer NI evaluates to 0, assuming the vessel operates fully outside the UK Continental Shelf (UKCS) or is a non-UK flagged vessel avoiding UK NIC obligations.</p>
             </div>
             <div className="space-y-1">
-              <strong className="text-foreground block">Subsistence Rules (Transit vs Victualling)</strong>
-              <p>Transit subsistence is only applied to travel days. Onboard subsistence (victualling) is applied to working days. In maritime, onboard subsistence is typically £0 as room and board are provided by the vessel.</p>
+              <strong className="text-foreground block">Subsistence Rules (Travel vs Victualling)</strong>
+              <p>Travel subsistence is only applied to travel days. Onboard subsistence (victualling) is applied to working days. In maritime, onboard subsistence is typically £0 as room and board are provided by the vessel.</p>
             </div>
           </>
         ) : (
