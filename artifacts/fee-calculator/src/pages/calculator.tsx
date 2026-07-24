@@ -83,7 +83,7 @@ function useToast() {
   }, []);
 
   const ToastContainer = () => (
-    <div className="fixed bottom-20 md:bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none">
+    <div className="fixed bottom-20 md:bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none print:hidden">
       {toasts.map(t => (
         <div key={t.id} className="animate-in slide-in-from-bottom-2 fade-in duration-300 bg-foreground text-background px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 font-medium text-sm">
           <div className="p-1 bg-background/20 rounded-full"><Check className="h-3.5 w-3.5 text-background" /></div>
@@ -164,7 +164,16 @@ export default function CalculatorPage() {
   const [consolidatedRate, setConsolidatedRate] = useState('');
   const [feeType, setFeeType] = useLocalStorage<'percentage' | 'fixed'>('calc_fee_type', 'percentage');
   const [margin, setMargin] = useLocalStorage('calc_margin', '15');
+
+  // Tax & Additions
+  const [includePension, setIncludePension] = useLocalStorage('calc_inc_pension', false);
+  const [includeAppyLevy, setIncludeAppyLevy] = useLocalStorage('calc_inc_appy_levy', false);
+  const [includeContingency, setIncludeContingency] = useLocalStorage('calc_inc_contingency', false);
+  const [contingencyType, setContingencyType] = useLocalStorage<'percentage' | 'fixed'>('calc_contingency_type', 'percentage');
+  const [contingencyValue, setContingencyValue] = useLocalStorage('calc_contingency_val', '');
+
   const [includeNI, setIncludeNI] = useLocalStorage('calc_inc_ni', true);
+  const [niMode, setNiMode] = useLocalStorage<'base' | 'total'>('calc_ni_mode', 'base');
   const [seafarerExempt, setSeafarerExempt] = useLocalStorage('calc_sea_exempt', false);
 
   // Maritime Subsistence State
@@ -227,6 +236,7 @@ export default function CalculatorPage() {
   const reset = () => {
     setConsolidatedRate(''); setWorkingDays('28'); setTravelDays('2');
     setMobTravel(''); setMobVisas(''); setMobAgent(''); setSalary('50000');
+    setContingencyValue('');
     setPdStartDate(''); setPdFinishDate(''); setPdDayRate(''); setPdAdvance('');
     setSubDaysOverrides({});
     showToast('Session values reset. Settings preserved.');
@@ -258,19 +268,38 @@ export default function CalculatorPage() {
     const cRate = parseFloat(consolidatedRate) || 0;
     const cMarginVal = parseFloat(margin) || 0;
     const cTravelFeeVal = parseFloat(travelFee) || 0;
-    const cNiMultiplier = (includeNI && !seafarerExempt) ? 0.155 : 0;
+    const cContingencyInputVal = parseFloat(contingencyValue) || 0;
+
+    // ----------------------------------------------------
+    // Daily Additions (Pension, Levy, Contingency)
+    // ----------------------------------------------------
+    const cPension = includePension ? cRate * 0.04 : 0;
+    const cAppyLevy = includeAppyLevy ? cRate * 0.005 : 0;
+    const cContingency = includeContingency 
+      ? (contingencyType === 'percentage' ? cRate * (cContingencyInputVal / 100) : cContingencyInputVal) 
+      : 0;
+
+    const cTotalAdditions = cPension + cAppyLevy + cContingency;
 
     // Subsistence values
     const cSubTravelAmt = includeSubsistence ? (parseFloat(subsistenceTravel) || 0) : 0;
     const cSubOnboardAmt = includeSubsistence ? (parseFloat(subsistenceOnboard) || 0) : 0;
 
+    // ----------------------------------------------------
     // Daily Onboard Charge 
-    const cEmployerNI = cRate * cNiMultiplier;
-    const cFeeBase = cRate + cEmployerNI + (subsistenceInFee ? cSubOnboardAmt : 0);
-    const cManagementFee = feeType === 'percentage' ? cFeeBase * (cMarginVal / 100) : cMarginVal;
-    const cTotalCharge = cRate + cEmployerNI + cSubOnboardAmt + cManagementFee;
+    // ----------------------------------------------------
+    const cNiMultiplier = (includeNI && !seafarerExempt) ? 0.155 : 0;
+    const niBaseAmount = niMode === 'total' ? (cRate + cTotalAdditions) : cRate;
+    const cEmployerNI = niBaseAmount * cNiMultiplier;
 
+    const cFeeBase = cRate + cTotalAdditions + cEmployerNI + (subsistenceInFee ? cSubOnboardAmt : 0);
+    const cManagementFee = feeType === 'percentage' ? cFeeBase * (cMarginVal / 100) : cMarginVal;
+
+    const cTotalCharge = cRate + cTotalAdditions + cEmployerNI + cSubOnboardAmt + cManagementFee;
+
+    // ----------------------------------------------------
     // Travel Days Math (Decoupled to ensure 100% subsistence)
+    // ----------------------------------------------------
     const nWorkingDays = Math.max(0, parseFloat(workingDays) || 0);
     const nTravelDays = Math.max(0, parseFloat(travelDays) || 0);
 
@@ -278,25 +307,41 @@ export default function CalculatorPage() {
     const travelPayableDays = nTravelDays * travelRateMultiplier; 
     const travelSubDays = Math.ceil(nTravelDays); 
 
+    // Apply multiplier to additions for travel calculation
+    const cTravelRate = cRate * travelRateMultiplier;
+    const cTravelPension = includePension ? cTravelRate * 0.04 : 0;
+    const cTravelAppyLevy = includeAppyLevy ? cTravelRate * 0.005 : 0;
+    const cTravelContingency = includeContingency 
+      ? (contingencyType === 'percentage' ? cTravelRate * (cContingencyInputVal / 100) : cContingencyInputVal * travelRateMultiplier) 
+      : 0;
+
+    const cTravelTotalAdditions = cTravelPension + cTravelAppyLevy + cTravelContingency;
+
+    const travelNIBaseAmount = niMode === 'total' ? (cTravelRate + cTravelTotalAdditions) : cTravelRate;
+    const cTravelNI = travelNIBaseAmount * cNiMultiplier;
+
+    // Daily Travel Reference
+    const cTravelFeeBaseRef = cTravelRate + cTravelTotalAdditions + cTravelNI + (subsistenceInFee ? cSubTravelAmt : 0);
+    const cTravelManagementFee = feeType === 'percentage' ? cTravelFeeBaseRef * (cMarginVal / 100) : cMarginVal;
+    const cTravelDayCharge = cTravelRate + cTravelTotalAdditions + cTravelNI + cSubTravelAmt + cTravelManagementFee;
+
+    // Total Travel Block
     const totalTravelPay = travelPayableDays * cRate;
-    const totalTravelNI = travelPayableDays * (cRate * cNiMultiplier);
+    const totalTravelAdditions = travelPayableDays * cTotalAdditions;
+    const totalTravelNIBase = niMode === 'total' ? (totalTravelPay + totalTravelAdditions) : totalTravelPay;
+    const totalTravelNI = totalTravelNIBase * cNiMultiplier;
     const totalTravelSub = travelSubDays * cSubTravelAmt;
 
-    const totalTravelFeeBase = totalTravelPay + totalTravelNI + (subsistenceInFee ? totalTravelSub : 0);
+    const totalTravelFeeBase = totalTravelPay + totalTravelAdditions + totalTravelNI + (subsistenceInFee ? totalTravelSub : 0);
     const totalTravelManagementFee = feeType === 'percentage' 
       ? totalTravelFeeBase * (cMarginVal / 100) 
       : cMarginVal * travelSubDays;
 
-    const tripTravelTotal = totalTravelPay + totalTravelNI + totalTravelSub + totalTravelManagementFee;
+    const tripTravelTotal = totalTravelPay + totalTravelAdditions + totalTravelNI + totalTravelSub + totalTravelManagementFee;
 
-    // Single reference day for the UI Breakdown block
-    const cTravelRate = cRate * travelRateMultiplier;
-    const cTravelNI = cTravelRate * cNiMultiplier;
-    const cTravelFeeBase = cTravelRate + cTravelNI + (subsistenceInFee ? cSubTravelAmt : 0);
-    const cTravelManagementFee = feeType === 'percentage' ? cTravelFeeBase * (cMarginVal / 100) : cMarginVal;
-    const cTravelDayCharge = cTravelRate + cTravelNI + cSubTravelAmt + cTravelManagementFee;
-
+    // ----------------------------------------------------
     // Logistics & Travel Costs (Where the separate Travel Fee is applied)
+    // ----------------------------------------------------
     const fTravel = parseFloat(mobTravel) || 0;
     const fVisas = parseFloat(mobVisas) || 0;
     const fAgent = parseFloat(mobAgent) || 0;
@@ -307,12 +352,15 @@ export default function CalculatorPage() {
       : 0;
     const logisticsTotal = logisticsBase + logisticsFee;
 
+    // ----------------------------------------------------
     // Grand Totals
+    // ----------------------------------------------------
     const tripWorkingTotal = nWorkingDays * cTotalCharge;
     const tripGrandTotal = tripWorkingTotal + tripTravelTotal + logisticsTotal;
 
     return {
       cRate, cMarginVal, feeType, cEmployerNI, cTotalCharge, cManagementFee,
+      cPension, cAppyLevy, cContingency, cTotalAdditions,
       cSubTravelAmt, cSubOnboardAmt,
       cTravelRate, cTravelNI, cTravelFeeVal, travelFeeType, cTravelManagementFee, cTravelDayCharge,
       nWorkingDays, nTravelDays, travelPayableDays, travelSubDays,
@@ -320,7 +368,7 @@ export default function CalculatorPage() {
       tripWorkingTotal, tripTravelTotal, tripGrandTotal,
       totalBarVal: Math.max(cTotalCharge, 1)
     };
-  }, [consolidatedRate, feeType, margin, includeNI, seafarerExempt, subsistenceTravel, subsistenceOnboard, includeSubsistence, subsistenceInFee, travelDayFull, travelFeeType, travelFee, workingDays, travelDays, mobTravel, mobVisas, mobAgent, logisticsInFee]);
+  }, [consolidatedRate, feeType, margin, includePension, includeAppyLevy, includeContingency, contingencyType, contingencyValue, includeNI, niMode, seafarerExempt, subsistenceTravel, subsistenceOnboard, includeSubsistence, subsistenceInFee, travelDayFull, travelFeeType, travelFee, workingDays, travelDays, mobTravel, mobVisas, mobAgent, logisticsInFee]);
 
   const perm = useMemo(() => {
     const pSalaryInput = parseFloat(salary) || 0;
@@ -439,12 +487,26 @@ export default function CalculatorPage() {
 
   // ─── Export Functions ───
   const copyContractBreakdown = () => {
-    const text = `Maritime Contract Charge Breakdown (Per Day)
------------------------------------
-Consolidated Rate: ${formatCurrency(contract.cRate)}
-${includeNI && !seafarerExempt ? `Employer's NIC: ${formatCurrency(contract.cEmployerNI)}\n` : ''}${seafarerExempt ? `Employer's NIC: Exempt (Seafarer/Non-UKCS)\n` : ''}${includeSubsistence && contract.cSubOnboardAmt > 0 ? `Victualling/Onboard Subsistence: ${formatCurrency(contract.cSubOnboardAmt)}\n` : ''}Management Fee (${contract.feeType === 'percentage' ? `${contract.cMarginVal}%` : 'Fixed'}): ${formatCurrency(contract.cManagementFee)}
------------------------------------
-Total Charge Rate (Onboard): ${formatCurrency(contract.cTotalCharge)}`;
+    let text = `Maritime Contract Charge Breakdown (Per Day)\n-----------------------------------\n`;
+    text += `Consolidated Rate: ${formatCurrency(contract.cRate)}\n`;
+    if (includePension) text += `Pension (4%): ${formatCurrency(contract.cPension)}\n`;
+    if (includeAppyLevy) text += `Apprenticeship Levy (0.5%): ${formatCurrency(contract.cAppyLevy)}\n`;
+    if (includeContingency) text += `Contingency: ${formatCurrency(contract.cContingency)}\n`;
+
+    if (includeNI && !seafarerExempt) {
+      text += `Employer's NIC: ${formatCurrency(contract.cEmployerNI)}\n`;
+    } else if (seafarerExempt) {
+      text += `Employer's NIC: Exempt (Seafarer/Non-UKCS)\n`;
+    }
+
+    if (includeSubsistence && contract.cSubOnboardAmt > 0) {
+      text += `Victualling/Onboard Subsistence: ${formatCurrency(contract.cSubOnboardAmt)}\n`;
+    }
+
+    text += `Management Fee (${contract.feeType === 'percentage' ? `${contract.cMarginVal}%` : 'Fixed'}): ${formatCurrency(contract.cManagementFee)}\n`;
+    text += `-----------------------------------\n`;
+    text += `Total Charge Rate (Onboard): ${formatCurrency(contract.cTotalCharge)}`;
+
     navigator.clipboard.writeText(text);
     showToast('Charge breakdown copied');
   };
@@ -548,7 +610,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
     <div className="min-h-[100dvh] bg-background py-10 px-4 sm:px-6 md:px-8 flex flex-col items-center pb-28 md:pb-10">
       <ToastContainer />
       <div className="w-full max-w-5xl">
-        <header className="mb-10 flex flex-col md:flex-row md:items-start justify-between gap-4">
+        <header className="mb-10 flex flex-col md:flex-row md:items-start justify-between gap-4 print:hidden">
           <div>
             <Logo />
             <h1 className="text-3xl font-bold tracking-tight text-foreground flex items-center gap-3">Maritime Fee Calculator</h1>
@@ -560,7 +622,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
         </header>
 
         <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)} className="w-full">
-          <TabsList className="grid w-full max-w-2xl grid-cols-3 mb-8 bg-input/40 p-1 rounded-xl">
+          <TabsList className="grid w-full max-w-2xl grid-cols-3 mb-8 bg-input/40 p-1 rounded-xl print:hidden">
             <TabsTrigger value="contract" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300"><Ship className="h-4 w-4" />Contract <span className="hidden sm:inline">& Hitch</span></TabsTrigger>
             <TabsTrigger value="perm" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300"><Briefcase className="h-4 w-4" />Permanent</TabsTrigger>
             <TabsTrigger value="paydays" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300"><CalendarDays className="h-4 w-4" />Payment Days</TabsTrigger>
@@ -579,7 +641,53 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                     <NumInput value={consolidatedRate} onChange={setConsolidatedRate} prefix="£" aria-label="Consolidated Rate" />
                   </div>
 
-                  <div className="space-y-2">
+                  <div className="space-y-3 pt-2">
+                    <div className="flex justify-between group">
+                      <div className="space-y-1 pr-4">
+                        <label className="text-sm font-bold cursor-pointer group-hover:text-primary transition-colors" onClick={() => setIncludePension(!includePension)}>Include Pension</label>
+                        <p className="text-xs text-muted-foreground font-medium">Standard 4% addition</p>
+                      </div>
+                      <Switch checked={includePension} onCheckedChange={setIncludePension} />
+                    </div>
+
+                    <div className="flex justify-between group">
+                      <div className="space-y-1 pr-4">
+                        <label className="text-sm font-bold cursor-pointer group-hover:text-primary transition-colors" onClick={() => setIncludeAppyLevy(!includeAppyLevy)}>Include Apprenticeship Levy</label>
+                        <p className="text-xs text-muted-foreground font-medium">Standard 0.5% addition</p>
+                      </div>
+                      <Switch checked={includeAppyLevy} onCheckedChange={setIncludeAppyLevy} />
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between group">
+                        <div className="space-y-1 pr-4">
+                          <label className="text-sm font-bold cursor-pointer group-hover:text-primary transition-colors" onClick={() => setIncludeContingency(!includeContingency)}>Add Contingency</label>
+                        </div>
+                        <Switch checked={includeContingency} onCheckedChange={setIncludeContingency} />
+                      </div>
+                      <AnimatedSection show={includeContingency}>
+                        <div className="flex items-center gap-2 pt-1">
+                           <div className="w-24">
+                              <SegmentedControl 
+                                value={contingencyType} 
+                                onChange={setContingencyType} 
+                                options={[{label: '%', value: 'percentage'}, {label: '£', value: 'fixed'}]} 
+                                ariaLabel="Contingency Type"
+                              />
+                            </div>
+                            <NumInput 
+                              value={contingencyValue} 
+                              onChange={setContingencyValue} 
+                              prefix={contingencyType === 'fixed' ? '£' : undefined} 
+                              suffix={contingencyType === 'percentage' ? '%' : undefined} 
+                              placeholder="0.0" 
+                            />
+                        </div>
+                      </AnimatedSection>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 pt-2 border-t border-border/60">
                     <div className="flex items-center justify-between">
                       <label className="block text-sm font-bold">Management Fee</label>
                       <div className="w-32">
@@ -609,12 +717,26 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                     </div>
 
                     <AnimatedSection show={includeNI}>
-                      <div className="flex justify-between group bg-amber-500/10 p-3 rounded-lg border border-amber-500/20 mt-4">
-                        <div className="space-y-1 pr-4">
-                          <label className="text-sm font-bold text-amber-600 dark:text-amber-400 cursor-pointer" onClick={() => setSeafarerExempt(!seafarerExempt)}>Seafarer Exemption</label>
-                          <p className="text-xs text-amber-600/80 dark:text-amber-400/80 font-medium">Vessel non-UK flagged / outside UKCS. NI evaluates to £0.</p>
+                      <div className="space-y-3 bg-amber-500/5 p-4 rounded-xl border border-amber-500/20 mt-2">
+                        <div className="space-y-2">
+                          <label className="block text-xs font-bold text-amber-600/90 dark:text-amber-400/90 uppercase tracking-wide">NI Calculated On</label>
+                          <SegmentedControl 
+                            value={niMode} 
+                            onChange={setNiMode} 
+                            options={[
+                              {label: 'Base Rate', value: 'base'}, 
+                              {label: 'Total Amount', value: 'total'}
+                            ]} 
+                            ariaLabel="NI Calculation Basis"
+                          />
                         </div>
-                        <Switch checked={seafarerExempt} onCheckedChange={setSeafarerExempt} className="data-[state=checked]:bg-amber-500" />
+                        <div className="flex justify-between items-center pt-2 border-t border-amber-500/20">
+                          <div className="space-y-0.5 pr-4">
+                            <label className="text-sm font-bold text-amber-600 dark:text-amber-400 cursor-pointer" onClick={() => setSeafarerExempt(!seafarerExempt)}>Seafarer Exemption</label>
+                            <p className="text-xs text-amber-600/80 dark:text-amber-400/80 font-medium">Non-UK flagged / outside UKCS.</p>
+                          </div>
+                          <Switch checked={seafarerExempt} onCheckedChange={setSeafarerExempt} className="data-[state=checked]:bg-amber-500" />
+                        </div>
                       </div>
                     </AnimatedSection>
                   </div>
@@ -751,13 +873,19 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
 
                   <div className="w-full h-3 bg-primary-foreground/10 rounded-full mb-6 overflow-hidden flex transition-all duration-500">
                     <div className="bg-white h-full transition-all duration-500" style={{ width: `${(contract.cRate / contract.totalBarVal) * 100}%` }} title="Worker Pay" />
-                    <div className="bg-white/70 h-full transition-all duration-500 border-l border-primary/20" style={{ width: `${(contract.cEmployerNI / contract.totalBarVal) * 100}%` }} title="Employer NI" />
+                    <div className="bg-white/80 h-full transition-all duration-500 border-l border-primary/20" style={{ width: `${(contract.cTotalAdditions / contract.totalBarVal) * 100}%` }} title="Additions" />
+                    <div className="bg-white/60 h-full transition-all duration-500 border-l border-primary/20" style={{ width: `${(contract.cEmployerNI / contract.totalBarVal) * 100}%` }} title="Employer NI" />
                     <div className="bg-white/40 h-full transition-all duration-500 border-l border-primary/20" style={{ width: `${(contract.cSubOnboardAmt / contract.totalBarVal) * 100}%` }} title="Subsistence" />
                     <div className="bg-white/20 h-full transition-all duration-500 border-l border-primary/20" style={{ width: `${(contract.cManagementFee / contract.totalBarVal) * 100}%` }} title="Management Fee" />
                   </div>
 
                   <div className="space-y-3 relative z-0">
                     <LineItem label="Consolidated Day Rate" value={contract.cRate} isBold />
+
+                    {includePension && <LineItem label="Pension (4%)" value={contract.cPension} />}
+                    {includeAppyLevy && <LineItem label="Apprenticeship Levy (0.5%)" value={contract.cAppyLevy} />}
+                    {includeContingency && <LineItem label={`Contingency (${contingencyType === 'percentage' && contract.cContingency > 0 ? contingencyValue + '%' : 'Fixed'})`} value={contract.cContingency} />}
+
                     {includeNI && (
                       <LineItem 
                         label={seafarerExempt ? "Employers NIC (Exempt)" : "Employers NIC (15.5%)"} 
@@ -772,7 +900,10 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                         <Info className="h-3.5 w-3.5 shrink-0" />
                         <span>
                           Fee = {contract.feeType === 'percentage' 
-                            ? `${contract.cMarginVal}% × (${formatCurrency(contract.cRate)} ${includeNI && !seafarerExempt ? ` + NI` : ''} ${subsistenceInFee && contract.cSubOnboardAmt > 0 ? ` + Sub` : ''})` 
+                            ? `${contract.cMarginVal}% × (${formatCurrency(contract.cRate)} 
+                              ${contract.cTotalAdditions > 0 ? ` + Additions` : ''} 
+                              ${includeNI && !seafarerExempt ? ` + NI` : ''} 
+                              ${subsistenceInFee && contract.cSubOnboardAmt > 0 ? ` + Sub` : ''})` 
                             : `${formatCurrency(contract.cMarginVal)} Flat`}
                         </span>
                       </div>
@@ -791,7 +922,10 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                     </div>
                     <div className="space-y-2.5">
                       <LineItem label={`Consolidated Rate (×${travelDayFull ? '1' : '0.5'})`} value={contract.cTravelRate} />
-                      {includeNI && !seafarerExempt && <LineItem label="Employers NIC on travel rate" value={contract.cTravelNI} />}
+                      {includePension && <LineItem label="Pension" value={contract.cTravelRate * 0.04} />}
+                      {includeAppyLevy && <LineItem label="Apprenticeship Levy" value={contract.cTravelRate * 0.005} />}
+                      {includeContingency && <LineItem label="Contingency" value={contract.cTravelContingency} />}
+                      {includeNI && !seafarerExempt && <LineItem label="Employers NIC" value={contract.cTravelNI} />}
                       {includeSubsistence && contract.cSubTravelAmt > 0 && <LineItem label="Travel Subsistence (Always 100%)" value={contract.cSubTravelAmt} />}
                       <LineItem label={`Management Fee (Main)`} value={contract.cTravelManagementFee} />
                       <div className="pt-3 border-t border-primary-foreground/20 flex items-center justify-between">
@@ -1010,7 +1144,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
           {/* ─────────────── PAYMENT DAYS TAB ─────────────── */}
           <TabsContent value="paydays" className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-400">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              <div className="lg:col-span-5 flex flex-col gap-6">
+              <div className="lg:col-span-5 flex flex-col gap-6 print:hidden">
                 <div className="bg-card border border-card-border p-7 rounded-2xl shadow-sm space-y-6">
                   <h2 className="text-lg font-bold border-b border-border pb-4">Payment Days Calculator</h2>
 
@@ -1075,8 +1209,14 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                 <AssumptionsAccordion />
               </div>
 
-              <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:shadow-none print:text-black print:bg-white print:border-2">
+              <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:col-span-12 print:shadow-none print:w-full print:text-black print:bg-white print:border-2">
                 <div className="p-8 md:p-10 flex-grow relative z-0">
+
+                  {/* Print-only Header */}
+                  <div className="hidden print:block text-xs text-gray-500 mb-4 uppercase tracking-widest font-bold">
+                    Generated on {new Date().toLocaleDateString('en-GB')}
+                  </div>
+
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
                     <div className="flex items-center gap-3">
                       <h2 className="text-xl font-bold">Payroll Summary</h2>
@@ -1163,17 +1303,19 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                                 {pdPayrollType === 'fortnightly' ? (
                                   <span className="text-sm font-bold text-white print:text-black">{split.periodLabel}</span>
                                 ) : (
-                                  <>
-                                    <span className="text-sm font-bold text-blue-400 print:text-blue-600">{split.periodLabel}</span>
-                                    <span className="text-xs font-medium text-primary-foreground/50 print:text-gray-500">
-                                      {formatUK(split.periodStart)} – {formatUK(split.periodEnd)}
-                                    </span>
-                                  </>
+                                  <span className="text-xs font-medium text-primary-foreground/50 print:text-gray-500">
+                                    {formatUK(split.periodStart)} – {formatUK(split.periodEnd)}
+                                  </span>
                                 )}
                               </div>
-                              <span className="font-mono font-bold text-chart-1 text-base tabular-nums">
-                                {split.days % 1 === 0 ? split.days.toFixed(0) : formatNumber(split.days)} days
-                              </span>
+                              <div className="flex items-center gap-3">
+                                {pdPayrollType === 'monthly' && (
+                                  <span className="text-sm font-bold text-blue-400 print:text-blue-600">{split.periodLabel}</span>
+                                )}
+                                <span className="font-mono font-bold text-chart-1 text-base tabular-nums">
+                                  {split.days % 1 === 0 ? split.days.toFixed(0) : formatNumber(split.days)} days
+                                </span>
+                              </div>
                             </div>
                             <div className="grid grid-cols-2 divide-x divide-primary-foreground/10 print:divide-gray-200">
                               <div className="px-4 py-2.5">
@@ -1197,14 +1339,25 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                                   <div className="flex justify-between items-center text-xs">
                                     <div className="flex items-center gap-1.5 text-primary-foreground/60 print:text-gray-600">
                                       <span>Sub. Days:</span>
-                                      <input 
-                                        type="number"
-                                        value={subDaysOverrides[idx] ?? ''}
-                                        onChange={e => setSubDaysOverrides(prev => ({...prev, [idx]: e.target.value}))}
-                                        placeholder={split.days.toString()}
-                                        title="Override subsistence days"
-                                        className="w-12 bg-background/30 border border-primary-foreground/20 rounded px-1 py-0.5 text-white print:text-black print:border-gray-300 text-center focus:outline-none focus:border-primary-foreground/50 transition-colors font-mono tabular-nums placeholder:text-primary-foreground/40 print:placeholder:text-gray-400"
-                                      />
+                                      <div className="relative flex items-center gap-1">
+                                        <input 
+                                          type="number"
+                                          value={subDaysOverrides[idx] ?? ''}
+                                          onChange={e => setSubDaysOverrides(prev => ({...prev, [idx]: e.target.value}))}
+                                          placeholder={split.days.toString()}
+                                          title="Override subsistence days"
+                                          className="w-12 bg-background/30 border border-primary-foreground/20 rounded px-1 py-0.5 text-white print:text-black print:border-gray-300 text-center focus:outline-none focus:border-primary-foreground/50 transition-colors font-mono tabular-nums placeholder:text-primary-foreground/40 print:placeholder:text-gray-400"
+                                        />
+                                        {subDaysOverrides[idx] !== undefined && (
+                                          <button 
+                                            onClick={() => setSubDaysOverrides(prev => { const newObj = {...prev}; delete newObj[idx]; return newObj; })}
+                                            className="text-primary-foreground/40 hover:text-red-400 print:hidden transition-colors"
+                                            title="Reset to default days"
+                                          >
+                                            <RotateCcw className="h-3 w-3" />
+                                          </button>
+                                        )}
+                                      </div>
                                     </div>
                                     <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrency(split.subDays * (parseFloat(pdSubsistenceRate) || 0))}</span>
                                   </div>
@@ -1224,7 +1377,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
       </div>
 
       {/* Feature 7: Sticky Mobile Summary */}
-      <div className="fixed bottom-0 left-0 right-0 bg-primary border-t border-primary-foreground/10 text-primary-foreground p-4 md:hidden z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] animate-in slide-in-from-bottom-full duration-500">
+      <div className="fixed bottom-0 left-0 right-0 bg-primary border-t border-primary-foreground/10 text-primary-foreground p-4 md:hidden z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] animate-in slide-in-from-bottom-full duration-500 print:hidden">
         <div className="flex items-center justify-between max-w-5xl mx-auto">
           <div className="text-xs font-bold uppercase tracking-widest text-primary-foreground/70">
             {mode === 'contract' ? (includeTrip ? 'Total Hitch' : 'Charge Rate') : mode === 'perm' ? 'Placement Fee' : (mode === 'paydays' && pdIncludePay ? 'Total Net Pay' : 'Total Days')}
@@ -1276,7 +1429,7 @@ function ProjectionCard({ label, days, charge, fee }: { label: string; days: num
 
 function AssumptionsAccordion({ maritime = false }: { maritime?: boolean }) {
   return (
-    <details className="group [&_summary::-webkit-details-marker]:hidden bg-card border border-card-border rounded-2xl shadow-sm transition-all overflow-hidden">
+    <details className="group [&_summary::-webkit-details-marker]:hidden bg-card border border-card-border rounded-2xl shadow-sm transition-all overflow-hidden print:hidden">
       <summary className="flex items-center justify-between cursor-pointer font-bold text-sm p-6 hover:bg-input/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
         Calculation Assumptions
         <ChevronDown className="h-4 w-4 text-muted-foreground group-open:rotate-180 transition-transform duration-300" />
