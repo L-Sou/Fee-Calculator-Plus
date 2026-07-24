@@ -193,8 +193,13 @@ export default function CalculatorPage() {
   const [pdFinishDate, setPdFinishDate] = useState('');
   const [pdFinishMode, setPdFinishMode] = useLocalStorage<'half' | 'full' | 'custom'>('calc_pd_finish_mode', 'full');
   const [pdFinishCustomVal, setPdFinishCustomVal] = useState('0.5');
+
   const [pdIncludeSubsistence, setPdIncludeSubsistence] = useLocalStorage('calc_pd_inc_sub', false);
   const [pdSubsistenceRate, setPdSubsistenceRate] = useLocalStorage('calc_pd_sub_rate', '');
+
+  const [pdIncludePay, setPdIncludePay] = useLocalStorage('calc_pd_inc_pay', false);
+  const [pdDayRate, setPdDayRate] = useLocalStorage('calc_pd_day_rate', '');
+  const [pdAdvance, setPdAdvance] = useLocalStorage('calc_pd_advance', '');
 
   // FX Rate State
   const [pFxRate, setPFxRate] = useState<number | null>(null);
@@ -205,7 +210,7 @@ export default function CalculatorPage() {
   const reset = () => {
     setConsolidatedRate(''); setWorkingDays('28'); setTravelDays('2');
     setMobTravel(''); setMobVisas(''); setMobAgent(''); setSalary('50000');
-    setPdStartDate(''); setPdFinishDate('');
+    setPdStartDate(''); setPdFinishDate(''); setPdDayRate(''); setPdAdvance('');
     showToast('Session values reset. Settings preserved.');
   };
 
@@ -241,31 +246,24 @@ export default function CalculatorPage() {
     const cSubTravelAmt = includeSubsistence ? (parseFloat(subsistenceTravel) || 0) : 0;
     const cSubOnboardAmt = includeSubsistence ? (parseFloat(subsistenceOnboard) || 0) : 0;
 
-    // ----------------------------------------------------
     // Daily Onboard Charge 
-    // ----------------------------------------------------
     const cEmployerNI = cRate * cNiMultiplier;
     const cFeeBase = cRate + cEmployerNI + (subsistenceInFee ? cSubOnboardAmt : 0);
     const cManagementFee = feeType === 'percentage' ? cFeeBase * (cMarginVal / 100) : cMarginVal;
     const cTotalCharge = cRate + cEmployerNI + cSubOnboardAmt + cManagementFee;
 
-    // ----------------------------------------------------
     // Travel Days Math (Decoupled to ensure 100% subsistence)
-    // ----------------------------------------------------
     const nWorkingDays = Math.max(0, parseFloat(workingDays) || 0);
     const nTravelDays = Math.max(0, parseFloat(travelDays) || 0);
 
-    // Math logic: Travel pay uses the multiplier. Subsistence is always full (rounded up to nearest whole day for fractions like 0.5)
     const travelRateMultiplier = travelDayFull ? 1 : 0.5;
     const travelPayableDays = nTravelDays * travelRateMultiplier; 
     const travelSubDays = Math.ceil(nTravelDays); 
 
-    // Calculate totals explicitly
     const totalTravelPay = travelPayableDays * cRate;
     const totalTravelNI = travelPayableDays * (cRate * cNiMultiplier);
     const totalTravelSub = travelSubDays * cSubTravelAmt;
 
-    // Travel days use the MAIN management fee, applied against the total travel pay and subsistence
     const totalTravelFeeBase = totalTravelPay + totalTravelNI + (subsistenceInFee ? totalTravelSub : 0);
     const totalTravelManagementFee = feeType === 'percentage' 
       ? totalTravelFeeBase * (cMarginVal / 100) 
@@ -280,9 +278,7 @@ export default function CalculatorPage() {
     const cTravelManagementFee = feeType === 'percentage' ? cTravelFeeBase * (cMarginVal / 100) : cMarginVal;
     const cTravelDayCharge = cTravelRate + cTravelNI + cSubTravelAmt + cTravelManagementFee;
 
-    // ----------------------------------------------------
     // Logistics & Travel Costs (Where the separate Travel Fee is applied)
-    // ----------------------------------------------------
     const fTravel = parseFloat(mobTravel) || 0;
     const fVisas = parseFloat(mobVisas) || 0;
     const fAgent = parseFloat(mobAgent) || 0;
@@ -293,9 +289,7 @@ export default function CalculatorPage() {
       : 0;
     const logisticsTotal = logisticsBase + logisticsFee;
 
-    // ----------------------------------------------------
     // Grand Totals
-    // ----------------------------------------------------
     const tripWorkingTotal = nWorkingDays * cTotalCharge;
     const tripGrandTotal = tripWorkingTotal + tripTravelTotal + logisticsTotal;
 
@@ -410,6 +404,12 @@ export default function CalculatorPage() {
     }
   }, [pdStartDate, pdFinishDate, pdPayrollType, pdStartMode, pdStartCustomVal, pdFinishMode, pdFinishCustomVal, pdIncludeSubsistence, pdSubsistenceRate, bankHolidays]);
 
+  // Payment Days derived math
+  const pdDayRateVal = parseFloat(pdDayRate) || 0;
+  const pdAdvanceVal = parseFloat(pdAdvance) || 0;
+  const pdTotalGross = (paydays.totalDays || 0) * pdDayRateVal;
+  const pdTotalNet = pdTotalGross + (paydays.totalSub || 0) - pdAdvanceVal;
+
   // ─── Export Functions ───
   const copyContractBreakdown = () => {
     const text = `Maritime Contract Charge Breakdown (Per Day)
@@ -451,12 +451,29 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
     let text = `Payment Days Schedule\n-----------------------------------\n`;
     text += `Payroll Type: ${pdPayrollType === 'monthly' ? 'Monthly' : 'Fortnightly'}\n`;
     text += `Total Payable Days: ${paydays.totalDays}\n`;
-    text += `-----------------------------------\n`;
+
+    if (pdIncludePay) {
+      text += `Day Rate: ${formatCurrency(pdDayRateVal)}\n`;
+      text += `Total Gross Pay: ${formatCurrency(pdTotalGross)}\n`;
+      if (pdIncludeSubsistence && paydays.totalSub && paydays.totalSub > 0) {
+         text += `Total Subsistence: ${formatCurrency(paydays.totalSub)}\n`;
+      }
+      if (pdAdvanceVal > 0) text += `Advance Deduction: -${formatCurrency(pdAdvanceVal)}\n`;
+      text += `Total Net Pay: ${formatCurrency(pdTotalNet)}\n`;
+    } else if (pdIncludeSubsistence && paydays.totalSub) {
+      text += `Total Subsistence: ${formatCurrency(paydays.totalSub)}\n`;
+    }
+
+    text += `-----------------------------------\n\n`;
 
     paydays.splits.forEach(s => {
       text += `${pdPayrollType === 'fortnightly' ? s.periodLabel : `${formatUK(s.periodStart)} – ${formatUK(s.periodEnd)}`}\n`;
       text += `Cut-off: ${formatUK(s.cutoff)} | Payday: ${formatUK(s.payday)}\n`;
       text += `Payable Days: ${s.days % 1 === 0 ? s.days.toFixed(0) : formatNumber(s.days)}`;
+
+      if (pdIncludePay && pdDayRateVal > 0) {
+         text += ` | Gross Pay: ${formatCurrency(s.days * pdDayRateVal)}`;
+      }
       if (pdIncludeSubsistence && subAmt > 0) {
          text += ` | Subsistence: ${formatCurrency(s.days * subAmt)}`;
       }
@@ -469,12 +486,19 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
 
   const exportScheduleCSV = () => {
     if (!paydays.splits.length) return;
-    const headers = "Period,Cut-off,Payday,Payable Days,Subsistence Amount\n";
     const subAmt = pdIncludeSubsistence ? (parseFloat(pdSubsistenceRate) || 0) : 0;
 
-    const rows = paydays.splits.map(s => 
-      `"${s.periodLabel}","${formatUK(s.cutoff)}","${formatUK(s.payday)}",${s.days},${s.days * subAmt}`
-    ).join("\n");
+    let headers = "Period,Cut-off,Payday,Payable Days";
+    if (pdIncludePay) headers += ",Gross Pay";
+    if (pdIncludeSubsistence) headers += ",Subsistence Amount";
+    headers += "\n";
+
+    const rows = paydays.splits.map(s => {
+      let row = `"${s.periodLabel}","${formatUK(s.cutoff)}","${formatUK(s.payday)}",${s.days}`;
+      if (pdIncludePay) row += `,${s.days * pdDayRateVal}`;
+      if (pdIncludeSubsistence) row += `,${s.days * subAmt}`;
+      return row;
+    }).join("\n");
 
     const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -991,6 +1015,36 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                     <SegmentedControl value={pdFinishMode} onChange={setPdFinishMode} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full', value: 'full'}, {label: 'Custom', value: 'custom'}]} ariaLabel="Finish Mode" />
                     {pdFinishMode === 'custom' && <NumInput value={pdFinishCustomVal} onChange={setPdFinishCustomVal} placeholder="0.5" suffix="days" />}
                   </div>
+
+                  <div className="space-y-3 pt-4 border-t border-border/60 group">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-bold cursor-pointer group-hover:text-primary transition-colors" onClick={() => setPdIncludeSubsistence(!pdIncludeSubsistence)}>Include Subsistence</label>
+                      <Switch checked={pdIncludeSubsistence} onCheckedChange={setPdIncludeSubsistence} />
+                    </div>
+                    <div className={cn('space-y-1 transition-all duration-300', !pdIncludeSubsistence && 'opacity-40 pointer-events-none h-0 overflow-hidden !my-0')}>
+                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide pt-2">Subsistence Rate (£ per day)</label>
+                      <NumInput value={pdSubsistenceRate} onChange={setPdSubsistenceRate} prefix="£" />
+                    </div>
+                  </div>
+
+                  <div className="space-y-3 pt-4 border-t border-border/60 group">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-bold cursor-pointer group-hover:text-primary transition-colors" onClick={() => setPdIncludePay(!pdIncludePay)}>Calculate Period Pay & Advances</label>
+                      <Switch checked={pdIncludePay} onCheckedChange={setPdIncludePay} />
+                    </div>
+                    <div className={cn('space-y-4 transition-all duration-300', !pdIncludePay && 'opacity-40 pointer-events-none h-0 overflow-hidden !my-0')}>
+                      <div className="grid grid-cols-2 gap-4 pt-2">
+                        <div className="space-y-2">
+                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Day Rate (£)</label>
+                          <NumInput value={pdDayRate} onChange={setPdDayRate} prefix="£" />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Advance Deduction (£)</label>
+                          <NumInput value={pdAdvance} onChange={setPdAdvance} prefix="£" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 <AssumptionsAccordion />
               </div>
@@ -1041,6 +1095,35 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                             {formatUK(parseDate(pdStartDate))} → {formatUK(parseDate(pdFinishDate))}
                           </p>
                         )}
+
+                        {(pdIncludeSubsistence || pdIncludePay) && (
+                          <div className="mt-6 pt-5 border-t border-primary-foreground/10 text-left space-y-2 print:border-gray-300">
+                            {pdIncludePay && (
+                              <div className="flex justify-between items-center text-sm">
+                                <span className="text-primary-foreground/60 font-medium print:text-gray-600">Gross Pay ({paydays.totalDays} × {formatCurrency(pdDayRateVal)})</span>
+                                <span className="font-mono font-bold text-white print:text-black">{formatCurrency(pdTotalGross)}</span>
+                              </div>
+                            )}
+                            {pdIncludeSubsistence && pdSubsistenceRate && (
+                              <div className="flex justify-between items-center text-sm">
+                                <span className="text-primary-foreground/60 font-medium print:text-gray-600">Subsistence</span>
+                                <span className="font-mono font-bold text-white print:text-black">{formatCurrency(paydays.totalSub || 0)}</span>
+                              </div>
+                            )}
+                            {pdIncludePay && pdAdvanceVal > 0 && (
+                              <div className="flex justify-between items-center text-sm">
+                                <span className="text-red-400 font-medium">Less Advance</span>
+                                <span className="font-mono font-bold text-red-400">-{formatCurrency(pdAdvanceVal)}</span>
+                              </div>
+                            )}
+                            {pdIncludePay && (
+                              <div className="flex justify-between items-center pt-2 mt-2 border-t border-primary-foreground/10 text-base print:border-gray-300">
+                                <span className="font-bold text-white print:text-black">Total Net Pay</span>
+                                <span className="font-mono font-bold text-chart-1">{formatCurrency(pdTotalNet)}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       <div className="space-y-3">
@@ -1067,6 +1150,22 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                                 <p className="font-mono font-bold text-sm text-chart-1 print:text-black">{formatUK(split.payday)}</p>
                               </div>
                             </div>
+                            {(pdIncludePay || pdIncludeSubsistence) && (
+                              <div className="px-4 py-2.5 border-t border-primary-foreground/10 bg-primary-foreground/5 flex flex-col gap-1 print:border-gray-200 print:bg-gray-50">
+                                {pdIncludePay && (
+                                  <div className="flex justify-between items-center text-xs">
+                                    <span className="text-primary-foreground/60 print:text-gray-600">Period Gross Pay</span>
+                                    <span className="font-mono font-bold text-white print:text-black">{formatCurrency(split.days * pdDayRateVal)}</span>
+                                  </div>
+                                )}
+                                {pdIncludeSubsistence && pdSubsistenceRate && (
+                                  <div className="flex justify-between items-center text-xs">
+                                    <span className="text-primary-foreground/60 print:text-gray-600">Subsistence</span>
+                                    <span className="font-mono font-bold text-white print:text-black">{formatCurrency(split.days * (parseFloat(pdSubsistenceRate) || 0))}</span>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -1083,12 +1182,12 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
       <div className="fixed bottom-0 left-0 right-0 bg-primary border-t border-primary-foreground/10 text-primary-foreground p-4 md:hidden z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] animate-in slide-in-from-bottom-full duration-500">
         <div className="flex items-center justify-between max-w-5xl mx-auto">
           <div className="text-xs font-bold uppercase tracking-widest text-primary-foreground/70">
-            {mode === 'contract' ? (includeTrip ? 'Total Hitch' : 'Charge Rate') : mode === 'perm' ? 'Placement Fee' : 'Total Days'}
+            {mode === 'contract' ? (includeTrip ? 'Total Hitch' : 'Charge Rate') : mode === 'perm' ? 'Placement Fee' : (mode === 'paydays' && pdIncludePay ? 'Total Net Pay' : 'Total Days')}
           </div>
           <div className="text-xl font-mono font-bold text-chart-1 transition-all" key={mode}>
             {mode === 'contract' ? (includeTrip ? formatCurrency(contract.tripGrandTotal) : formatCurrency(contract.cTotalCharge)) 
               : mode === 'perm' ? formatCurrency(perm.pPlacementFee) 
-              : (paydays.totalDays ?? 0)}
+              : (mode === 'paydays' && pdIncludePay ? formatCurrency(pdTotalNet) : (paydays.totalDays ?? 0))}
           </div>
         </div>
       </div>
