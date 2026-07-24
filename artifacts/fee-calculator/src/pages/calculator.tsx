@@ -444,6 +444,29 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
     showToast('Permanent summary copied');
   };
 
+  const copyPaydaysSummary = () => {
+    if (!paydays.splits.length) return;
+    const subAmt = pdIncludeSubsistence ? (parseFloat(pdSubsistenceRate) || 0) : 0;
+
+    let text = `Payment Days Schedule\n-----------------------------------\n`;
+    text += `Payroll Type: ${pdPayrollType === 'monthly' ? 'Monthly' : 'Fortnightly'}\n`;
+    text += `Total Payable Days: ${paydays.totalDays}\n`;
+    text += `-----------------------------------\n`;
+
+    paydays.splits.forEach(s => {
+      text += `${pdPayrollType === 'fortnightly' ? s.periodLabel : `${formatUK(s.periodStart)} – ${formatUK(s.periodEnd)}`}\n`;
+      text += `Cut-off: ${formatUK(s.cutoff)} | Payday: ${formatUK(s.payday)}\n`;
+      text += `Payable Days: ${s.days % 1 === 0 ? s.days.toFixed(0) : formatNumber(s.days)}`;
+      if (pdIncludeSubsistence && subAmt > 0) {
+         text += ` | Subsistence: ${formatCurrency(s.days * subAmt)}`;
+      }
+      text += `\n\n`;
+    });
+
+    navigator.clipboard.writeText(text.trim());
+    showToast('Payment schedule copied');
+  };
+
   const exportScheduleCSV = () => {
     if (!paydays.splits.length) return;
     const headers = "Period,Cut-off,Payday,Payable Days,Subsistence Amount\n";
@@ -983,6 +1006,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                     </div>
                     {paydays.splits.length > 0 && (
                       <div className="flex items-center gap-2 print:hidden">
+                        <ActionButton onClick={copyPaydaysSummary} icon={Copy} label="Copy" />
                         <ActionButton onClick={printSchedule} icon={Printer} label="Print" />
                         <ActionButton onClick={exportScheduleCSV} icon={Download} label="CSV" />
                       </div>
