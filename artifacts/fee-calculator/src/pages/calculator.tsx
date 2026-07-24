@@ -1159,9 +1159,18 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                         {paydays.splits.map((split, idx) => (
                           <div key={idx} className="bg-primary-foreground/10 rounded-xl overflow-hidden hover:bg-primary-foreground/20 transition-colors print:border print:border-gray-300 print:bg-white print:text-black">
                             <div className="flex items-center justify-between px-4 py-3 border-b border-primary-foreground/10 print:border-gray-200">
-                              <span className="text-sm font-bold text-white print:text-black">
-                                {pdPayrollType === 'fortnightly' ? split.periodLabel : `${formatUK(split.periodStart)} – ${formatUK(split.periodEnd)}`}
-                              </span>
+                              <div className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-2">
+                                {pdPayrollType === 'fortnightly' ? (
+                                  <span className="text-sm font-bold text-white print:text-black">{split.periodLabel}</span>
+                                ) : (
+                                  <>
+                                    <span className="text-sm font-bold text-blue-400 print:text-blue-600">{split.periodLabel}</span>
+                                    <span className="text-xs font-medium text-primary-foreground/50 print:text-gray-500">
+                                      {formatUK(split.periodStart)} – {formatUK(split.periodEnd)}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
                               <span className="font-mono font-bold text-chart-1 text-base tabular-nums">
                                 {split.days % 1 === 0 ? split.days.toFixed(0) : formatNumber(split.days)} days
                               </span>
