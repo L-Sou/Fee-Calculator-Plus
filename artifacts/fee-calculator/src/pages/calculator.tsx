@@ -7,7 +7,7 @@ import { Switch } from '@/components/ui/switch';
 import {
   RotateCcw, Briefcase, FileText, UtensilsCrossed, 
   CalendarDays, Globe, RefreshCw, AlertCircle, Copy, Download, Printer, 
-  ChevronDown, Check, Info, Ship, Anchor, Save, Users
+  ChevronDown, Check, Info, Ship, Anchor, Save, Users, FileCheck
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Logo from './Logo';
@@ -84,6 +84,27 @@ const FALLBACK_BANK_HOLIDAYS = new Set([
   '2025-01-01','2025-04-18','2025-04-21','2025-05-05','2025-05-26','2025-08-25','2025-12-25','2025-12-26',
   '2026-01-01','2026-04-03','2026-04-06','2026-05-04','2026-05-25','2026-08-31','2026-12-25','2026-12-28'
 ]);
+
+const RATING_OPTIONS = [
+  { label: 'Select...', value: '' },
+  { label: 'Excellent', value: 'Excellent' },
+  { label: 'Very Good', value: 'Very Good' },
+  { label: 'Good', value: 'Good' },
+  { label: 'Fair', value: 'Fair' },
+  { label: 'Poor', value: 'Poor' },
+];
+
+const RATING_FIELDS = [
+  { key: 'refCompetence', label: 'Competence / Ability' },
+  { key: 'refFlexibility', label: 'Flexibility' },
+  { key: 'refInitiative', label: 'Interest & Initiative' },
+  { key: 'refSafety', label: 'Health and Safety Awareness' },
+  { key: 'refSecurity', label: 'Security Awareness' },
+  { key: 'refTimeKeeping', label: 'Time Keeping' },
+  { key: 'refCommunication', label: 'Communication' },
+  { key: 'refRelationships', label: 'Relationships with Colleagues' },
+  { key: 'refOverall', label: 'Overall Performance' },
+];
 
 const currencyFormatters = new Map<string, Intl.NumberFormat>();
 const formatCurrencyIn = (val: number, currency: string) => {
@@ -351,6 +372,25 @@ interface AppState {
   pdIncludePay: boolean;
   pdDayRate: string;
   pdAdvance: string;
+  // Reference / Appraisal State
+  refSeafarerName: string;
+  refDiscipline: string;
+  refCompany: string;
+  refVessel: string;
+  refDates: string;
+  refCompetence: string;
+  refFlexibility: string;
+  refInitiative: string;
+  refSafety: string;
+  refSecurity: string;
+  refTimeKeeping: string;
+  refCommunication: string;
+  refRelationships: string;
+  refOverall: string;
+  refDrugsPolicy: string;
+  refReHire: string;
+  refComments: string;
+
   savedPresets: Record<string, Partial<AppState>>;
   updateField: <K extends keyof AppState>(field: K, value: AppState[K]) => void;
   resetToDefaults: () => void;
@@ -365,7 +405,11 @@ const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPre
   mobTravel: '', mobVisas: '', mobAgent: '', logisticsInFee: false, salary: '50000', placementFee: '20', includePermNI: false,
   pCurrency: 'GBP', invoiceInOrigin: false, pFxDate: new Date().toISOString().slice(0, 10), pdPayrollType: 'monthly',
   pdStartDate: '', pdStartMode: 'full', pdStartCustomVal: '0.5', pdFinishDate: '', pdFinishMode: 'full', pdFinishCustomVal: '0.5',
-  pdIncludeSubsistence: false, pdSubsistenceRate: '', pdIncludePay: false, pdDayRate: '', pdAdvance: ''
+  pdIncludeSubsistence: false, pdSubsistenceRate: '', pdIncludePay: false, pdDayRate: '', pdAdvance: '',
+  // Default Reference State
+  refSeafarerName: '', refDiscipline: '', refCompany: '', refVessel: '', refDates: '', refCompetence: '',
+  refFlexibility: '', refInitiative: '', refSafety: '', refSecurity: '', refTimeKeeping: '',
+  refCommunication: '', refRelationships: '', refOverall: '', refDrugsPolicy: '', refReHire: '', refComments: ''
 };
 
 const useStore = create<AppState>()(
@@ -465,6 +509,10 @@ function useFxRate(currency: CurrencyCode, baseDate: string) {
 
 // ─── 4. Reusable Sub-components ───────────────────────────────────────────────
 
+const TextInput = ({ value, onChange, placeholder, ariaLabel }: any) => (
+  <input type="text" value={value} onChange={e => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
+);
+
 const NumInput = ({ id, value, onChange, prefix, suffix, placeholder = '0.00', 'aria-label': ariaLabel }: any) => (
   <div className="relative group flex-1">
     {prefix && <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono pointer-events-none transition-colors group-focus-within:text-primary">{prefix}</span>}
@@ -525,7 +573,7 @@ const Tooltip = ({ text }: { text: string }) => (
 export default function CalculatorPage() {
   const { showToast, showUndoToast, ToastContainer } = useToast();
   const bankHolidays = useBankHolidays();
-  const [mode, setMode] = useState<'contract' | 'perm' | 'paydays'>('contract');
+  const [mode, setMode] = useState<'contract' | 'perm' | 'paydays' | 'reference'>('contract');
   const [newPresetName, setNewPresetName] = useState('');
   const [subDaysOverrides, setSubDaysOverrides] = useState<Record<number, string>>({});
 
@@ -633,6 +681,22 @@ export default function CalculatorPage() {
     downloadCSV('perm_breakdown.csv', headers, rows);
   };
 
+  const exportReferenceCSV = () => {
+    const headers = "Field,Value\n";
+    let rows = `"Seafarer Name","${s.refSeafarerName}"\n`;
+    rows += `"Discipline","${s.refDiscipline}"\n`;
+    rows += `"Company","${s.refCompany}"\n`;
+    rows += `"Vessel","${s.refVessel}"\n`;
+    rows += `"Dates of Assignment","${s.refDates}"\n`;
+    RATING_FIELDS.forEach(f => {
+       rows += `"${f.label}","${s[f.key as keyof AppState] || ''}"\n`;
+    });
+    rows += `"Adhere to Alcohol & Drugs Policy","${s.refDrugsPolicy}"\n`;
+    rows += `"Recommended for Re-Hire","${s.refReHire}"\n`;
+    rows += `"Additional Comments","${s.refComments.replace(/"/g, '""')}"\n`;
+    downloadCSV('seafarer_appraisal.csv', headers, rows);
+  };
+
   const copyContractBreakdown = () => {
     let text = `Maritime Contract Charge Breakdown (Per Day)\n-----------------------------------\n`;
     text += `Consolidated Rate: ${formatCurrencyIn(contract.cRate, s.cCurrency)}\n`;
@@ -728,6 +792,30 @@ export default function CalculatorPage() {
     copyText(text.trim()).then(ok => showToast(ok ? 'Payment schedule copied' : 'Clipboard access denied. Please select and copy manually.'));
   };
 
+  const copyReferenceSummary = () => {
+    let text = `Seafarer Feedback Form\n-----------------------------------\n`;
+    text += `Seafarer Name: ${s.refSeafarerName || '-'}\n`;
+    text += `Discipline: ${s.refDiscipline || '-'}\n`;
+    text += `Company: ${s.refCompany || '-'}\n`;
+    text += `Vessel: ${s.refVessel || '-'}\n`;
+    text += `Dates of Assignment: ${s.refDates || '-'}\n\n`;
+
+    text += `Performance Assessment:\n`;
+    RATING_FIELDS.forEach(f => {
+       text += `- ${f.label}: ${s[f.key as keyof AppState] || '-'}\n`;
+    });
+
+    text += `\nCompliance & Re-Hire:\n`;
+    text += `- Adhere to Alcohol & Drugs Policy: ${s.refDrugsPolicy || '-'}\n`;
+    text += `- Recommended for Re-Hire: ${s.refReHire || '-'}\n`;
+
+    if (s.refComments) {
+      text += `\nAdditional Comments:\n${s.refComments}\n`;
+    }
+
+    copyText(text.trim()).then(ok => showToast(ok ? 'Appraisal copied' : 'Clipboard access denied. Please select and copy manually.'));
+  };
+
   const exportScheduleCSV = () => {
     if (!paydays.splits.length) return;
     const subAmt = s.pdIncludeSubsistence ? (parseFloat(s.pdSubsistenceRate) || 0) : 0;
@@ -764,7 +852,7 @@ export default function CalculatorPage() {
           <div>
             <Logo />
             <h1 className="text-3xl font-bold tracking-tight text-foreground flex items-center gap-3">Maritime Fee Calculator</h1>
-            <p className="mt-2 text-muted-foreground font-medium">Specialised breakdown for seafarer hitch rotations, logistics, and margins.</p>
+            <p className="mt-2 text-muted-foreground font-medium">Specialised toolkit for maritime quoting and scheduling.</p>
           </div>
 
           <div className="flex flex-col sm:items-end gap-3">
@@ -789,10 +877,11 @@ export default function CalculatorPage() {
         </header>
 
         <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)} className="w-full">
-          <TabsList className="grid w-full max-w-2xl grid-cols-3 mb-8 bg-input/40 p-1 rounded-xl print:hidden">
-            <TabsTrigger value="contract" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm"><Ship className="h-4 w-4" />Contract<span className="hidden sm:inline">& Scheduler</span></TabsTrigger>
-            <TabsTrigger value="perm" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm"><Briefcase className="h-4 w-4" />Permanent</TabsTrigger>
+          <TabsList className="grid w-full max-w-3xl grid-cols-4 mb-8 bg-input/40 p-1 rounded-xl print:hidden">
+            <TabsTrigger value="contract" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm"><Ship className="h-4 w-4" />Contract</TabsTrigger>
+            <TabsTrigger value="perm" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm"><Briefcase className="h-4 w-4" />Perm</TabsTrigger>
             <TabsTrigger value="paydays" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm"><CalendarDays className="h-4 w-4" />Paydays</TabsTrigger>
+            <TabsTrigger value="reference" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm"><FileCheck className="h-4 w-4" />Reference</TabsTrigger>
           </TabsList>
 
           {/* ─────────────── CONTRACT TAB ─────────────── */}
@@ -1397,6 +1486,146 @@ export default function CalculatorPage() {
                       </div>
                     </div>
                   )}
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+
+          {/* ─────────────── REFERENCE TAB ─────────────── */}
+          <TabsContent value="reference" className="m-0 animate-in fade-in duration-400">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              <div className="lg:col-span-5 space-y-6 print:hidden">
+                <CollapsibleCard title="Assignment Details" icon={FileCheck} defaultOpen>
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Seafarer Name</label>
+                      <TextInput value={s.refSeafarerName} onChange={(v: string) => s.updateField('refSeafarerName', v)} placeholder="John Doe" />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Discipline</label>
+                      <TextInput value={s.refDiscipline} onChange={(v: string) => s.updateField('refDiscipline', v)} placeholder="Chief Engineer" />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Company</label>
+                      <TextInput value={s.refCompany} onChange={(v: string) => s.updateField('refCompany', v)} placeholder="Oceanic Shipping Ltd." />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Vessel</label>
+                      <TextInput value={s.refVessel} onChange={(v: string) => s.updateField('refVessel', v)} placeholder="MV Navigator" />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Dates of Assignment</label>
+                      <TextInput value={s.refDates} onChange={(v: string) => s.updateField('refDates', v)} placeholder="01 Jan 2026 - 28 Jan 2026" />
+                    </div>
+                  </div>
+                </CollapsibleCard>
+
+                <CollapsibleCard title="Performance Ratings" icon={Check} defaultOpen={false}>
+                  <div className="space-y-4">
+                    {RATING_FIELDS.map((field) => (
+                      <div key={field.key} className="space-y-2">
+                        <label className="block text-xs font-bold text-foreground">{field.label}</label>
+                        <select 
+                          className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-bold"
+                          value={s[field.key as keyof AppState] as string} 
+                          onChange={(e) => s.updateField(field.key as keyof AppState, e.target.value)}
+                        >
+                          {RATING_OPTIONS.map(opt => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </CollapsibleCard>
+
+                <CollapsibleCard title="Policies & Comments" icon={FileText} defaultOpen={false}>
+                  <div className="space-y-6">
+                    <div className="space-y-3">
+                      <label className="block text-xs font-bold text-foreground">Adhere to Alcohol & Drugs Policy?</label>
+                      <SegmentedControl 
+                        value={s.refDrugsPolicy} 
+                        onChange={(v) => s.updateField('refDrugsPolicy', v)} 
+                        options={[{label: 'N/A', value: ''}, {label: 'Yes', value: 'Yes'}, {label: 'No', value: 'No'}]} 
+                        ariaLabel="A&D Policy" 
+                      />
+                    </div>
+                    <div className="space-y-3">
+                      <label className="block text-xs font-bold text-foreground">Recommended for Re-Hire?</label>
+                      <SegmentedControl 
+                        value={s.refReHire} 
+                        onChange={(v) => s.updateField('refReHire', v)} 
+                        options={[{label: 'N/A', value: ''}, {label: 'Yes', value: 'Yes'}, {label: 'No', value: 'No'}]} 
+                        ariaLabel="Re-Hire" 
+                      />
+                    </div>
+                    <div className="space-y-2 pt-2 border-t border-border/40">
+                      <label className="block text-xs font-bold text-foreground">Additional Comments</label>
+                      <textarea 
+                        className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium resize-y min-h-[120px]"
+                        placeholder="Enter any additional feedback here..."
+                        value={s.refComments}
+                        onChange={(e) => s.updateField('refComments', e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </CollapsibleCard>
+              </div>
+
+              <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
+                <div className="p-8 md:p-10 flex-grow relative z-0">
+                  <div className="flex items-center justify-between gap-4 mb-8 print:hidden">
+                    <h2 className="text-xl font-bold">Appraisal Preview</h2>
+                    <div className="flex gap-2">
+                       <ActionButton onClick={copyReferenceSummary} icon={Copy} label="Copy" />
+                       <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
+                       <ActionButton onClick={exportReferenceCSV} icon={Download} label="CSV" />
+                    </div>
+                  </div>
+
+                  {/* Formal Printable Document Area */}
+                  <div className="bg-primary-foreground/5 p-8 rounded-xl print:p-0 print:bg-transparent border border-primary-foreground/10 print:border-none">
+                     <h1 className="text-2xl font-bold text-center mb-6 uppercase tracking-widest border-b border-primary-foreground/20 pb-4 print:border-gray-300">Seafarer Feedback Form</h1>
+
+                     <div className="grid grid-cols-1 sm:grid-cols-[1fr_2fr] gap-y-4 text-sm mb-10">
+                       <div className="font-bold text-primary-foreground/70 print:text-gray-600">Seafarer Name:</div><div className="font-bold">{s.refSeafarerName || '-'}</div>
+                       <div className="font-bold text-primary-foreground/70 print:text-gray-600">Discipline:</div><div className="font-bold">{s.refDiscipline || '-'}</div>
+                       <div className="font-bold text-primary-foreground/70 print:text-gray-600">Company:</div><div className="font-bold">{s.refCompany || '-'}</div>
+                       <div className="font-bold text-primary-foreground/70 print:text-gray-600">Vessel:</div><div className="font-bold">{s.refVessel || '-'}</div>
+                       <div className="font-bold text-primary-foreground/70 print:text-gray-600">Assignment Dates:</div><div className="font-bold">{s.refDates || '-'}</div>
+                     </div>
+
+                     <h3 className="text-lg font-bold border-b border-primary-foreground/20 pb-2 mb-4 print:border-gray-300">Performance Assessment</h3>
+                     <div className="space-y-2 mb-10">
+                        {RATING_FIELDS.map(f => (
+                           <div key={f.key} className="flex justify-between items-center text-sm border-b border-primary-foreground/5 pb-2 print:border-gray-200">
+                              <span className="font-medium text-primary-foreground/80 print:text-gray-700">{f.label}</span>
+                              <span className={cn("font-bold text-right", !s[f.key as keyof AppState] && "text-primary-foreground/30 print:text-gray-400")}>
+                                {s[f.key as keyof AppState] || '-'}
+                              </span>
+                           </div>
+                        ))}
+                     </div>
+
+                     <h3 className="text-lg font-bold border-b border-primary-foreground/20 pb-2 mb-4 print:border-gray-300">Compliance & Re-Hire</h3>
+                     <div className="space-y-2 mb-8">
+                         <div className="flex justify-between items-center text-sm border-b border-primary-foreground/5 pb-2 print:border-gray-200">
+                              <span className="font-medium text-primary-foreground/80 print:text-gray-700">Adhere to Alcohol & Drugs Policy:</span>
+                              <span className={cn("font-bold", !s.refDrugsPolicy && "text-primary-foreground/30 print:text-gray-400")}>{s.refDrugsPolicy || '-'}</span>
+                         </div>
+                         <div className="flex justify-between items-center text-sm border-b border-primary-foreground/5 pb-2 print:border-gray-200">
+                              <span className="font-medium text-primary-foreground/80 print:text-gray-700">Recommended for Re-Hire:</span>
+                              <span className={cn("font-bold", !s.refReHire && "text-primary-foreground/30 print:text-gray-400")}>{s.refReHire || '-'}</span>
+                         </div>
+                     </div>
+
+                     {s.refComments && (
+                       <div className="mt-8">
+                         <h3 className="text-lg font-bold border-b border-primary-foreground/20 pb-2 mb-4 print:border-gray-300">Additional Comments</h3>
+                         <p className="text-sm whitespace-pre-wrap leading-relaxed bg-primary-foreground/5 p-4 rounded-xl print:p-0 print:bg-transparent">{s.refComments}</p>
+                       </div>
+                     )}
+                  </div>
                 </div>
               </div>
             </div>
