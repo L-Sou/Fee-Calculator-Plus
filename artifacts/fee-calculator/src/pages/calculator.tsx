@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import {
-  Calculator, RotateCcw, Briefcase, FileText, UtensilsCrossed, PlaneTakeoff, 
+  RotateCcw, Briefcase, FileText, UtensilsCrossed, 
   CalendarDays, Globe, RefreshCw, AlertCircle, Copy, Download, Printer, 
   ChevronDown, Check, Info, Ship, Anchor, Save
 } from 'lucide-react';
@@ -880,7 +880,7 @@ export default function CalculatorPage() {
 
         <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)} className="w-full">
           <TabsList className="grid w-full max-w-2xl grid-cols-3 mb-8 bg-input/40 p-1 rounded-xl print:hidden">
-            <TabsTrigger value="contract" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300 focus-visible:ring-2 focus-visible:ring-primary"><Ship className="h-4 w-4" />Contract <span className="hidden sm:inline">& Hitch</span></TabsTrigger>
+            <TabsTrigger value="contract" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300 focus-visible:ring-2 focus-visible:ring-primary"><Ship className="h-4 w-4" />Contract<span className="hidden sm:inline">& Scheduler</span></TabsTrigger>
             <TabsTrigger value="perm" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300 focus-visible:ring-2 focus-visible:ring-primary"><Briefcase className="h-4 w-4" />Permanent</TabsTrigger>
             <TabsTrigger value="paydays" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300 focus-visible:ring-2 focus-visible:ring-primary"><CalendarDays className="h-4 w-4" />Payment Days</TabsTrigger>
           </TabsList>
@@ -1083,7 +1083,7 @@ export default function CalculatorPage() {
                   </AnimatedSection>
                 </CollapsibleCard>
 
-                <CollapsibleCard title="Hitch & Mob/Demob Scheduler" icon={Anchor} defaultOpen={false}>
+                <CollapsibleCard title="Scheduler" icon={Anchor} defaultOpen={false}>
                   <div className="flex items-center justify-between mb-2">
                     <label className="text-sm font-bold cursor-pointer" onClick={() => setIncludeTrip(!includeTrip)}>
                       Enable Hitch Scheduler
