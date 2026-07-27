@@ -1,27 +1,44 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import {
   Calculator, RotateCcw, Briefcase, FileText, UtensilsCrossed, PlaneTakeoff, 
   CalendarDays, Globe, RefreshCw, AlertCircle, Copy, Download, Printer, 
-  ChevronDown, Check, Info, Ship, Anchor
+  ChevronDown, Check, Info, Ship, Anchor, Save
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Logo from './Logo';
 
 // ─── 1. Utilities & Constants ─────────────────────────────────────────────────
 
-const formatCurrency = (val: number) =>
-  new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP', minimumFractionDigits: 2 }).format(val);
+const currencyFormatters = new Map<string, Intl.NumberFormat>();
+const formatCurrencyIn = (val: number, currency: string) => {
+  let fmt = currencyFormatters.get(currency);
+  if (!fmt) {
+    fmt = new Intl.NumberFormat('en-GB', { style: 'currency', currency, minimumFractionDigits: 2 });
+    currencyFormatters.set(currency, fmt);
+  }
+  return fmt.format(val);
+};
 
-const formatCurrencyIn = (val: number, currency: string) =>
-  new Intl.NumberFormat('en-GB', { style: 'currency', currency, minimumFractionDigits: 2 }).format(val);
+const numberFormatter = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 });
+const formatNumber = (val: number) => numberFormatter.format(val);
 
-const formatNumber = (val: number) =>
-  new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(val);
+const ukDateFormatter = new Intl.DateTimeFormat('en-GB');
+const formatUK = (d: Date) => ukDateFormatter.format(d);
 
 const CURRENCIES = ['EUR', 'USD', 'GBP', 'CHF', 'AUD', 'CAD'] as const;
 type CurrencyCode = typeof CURRENCIES[number];
+
+const curSym = (c: CurrencyCode) => ({ GBP: '£', EUR: '€', USD: '$', CHF: 'CHF', AUD: 'A$', CAD: 'C$' }[c] || '£');
+
+const FISCAL_RATES = {
+  pension: 0.04,
+  apprenticeshipLevy: 0.005,
+  employerNI: 0.155,
+  permNI: 0.15,
+  permNIThreshold: 9100,
+};
 
 const FALLBACK_BANK_HOLIDAYS = new Set([
   '2024-01-01','2024-03-29','2024-04-01','2024-05-06','2024-05-27','2024-08-26','2024-12-25','2024-12-26',
@@ -29,14 +46,11 @@ const FALLBACK_BANK_HOLIDAYS = new Set([
   '2026-01-01','2026-04-03','2026-04-06','2026-05-04','2026-05-25','2026-08-31','2026-12-25','2026-12-28'
 ]);
 
-// ─── 2. Domain Logic & Math ───────────────────────────────────────────────────
-
 function parseDate(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
   return new Date(y, m - 1, d, 12, 0, 0, 0); 
 }
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
-const formatUK = (d: Date) => new Intl.DateTimeFormat('en-GB').format(d);
 const addDays = (d: Date, n: number) => new Date(d.getTime() + n * 86400000);
 const isWeekend = (d: Date) => d.getDay() === 0 || d.getDay() === 6;
 const sundayBefore = (date: Date) => addDays(date, -(date.getDay() === 0 ? 7 : date.getDay()));
@@ -44,11 +58,29 @@ const sundayBefore = (date: Date) => addDays(date, -(date.getDay() === 0 ? 7 : d
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const FN_ANCHOR = new Date(2026, 0, 9, 12, 0, 0, 0);
 
-interface PayrollSplit {
-  periodStart: Date; periodEnd: Date; cutoff: Date; payday: Date; periodLabel: string; days: number; subDays: number;
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-// ─── 3. Custom Hooks ──────────────────────────────────────────────────────────
+// ─── 2. Custom Hooks ──────────────────────────────────────────────────────────
 
 function useLocalStorage<T>(key: string, initialValue: T) {
   const [storedValue, setStoredValue] = useState<T>(() => {
@@ -61,60 +93,134 @@ function useLocalStorage<T>(key: string, initialValue: T) {
     }
   });
 
+  const writeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const setValue = useCallback((value: T | ((val: T) => T)) => {
-    try {
-      const valueToStore = value instanceof Function ? value(storedValue) : value;
-      setStoredValue(valueToStore);
-      if (typeof window !== 'undefined') window.localStorage.setItem(key, JSON.stringify(valueToStore));
-    } catch (error) {
-      console.warn(`Error setting localStorage key "${key}":`, error);
-    }
-  }, [key, storedValue]);
+    setStoredValue(prev => {
+      const valueToStore = value instanceof Function ? value(prev) : value;
+      if (writeTimer.current) clearTimeout(writeTimer.current);
+      writeTimer.current = setTimeout(() => {
+        try {
+          if (typeof window !== 'undefined') window.localStorage.setItem(key, JSON.stringify(valueToStore));
+        } catch (error) {
+          console.warn(`Error setting localStorage key "${key}":`, error);
+        }
+      }, 300);
+      return valueToStore;
+    });
+  }, [key]);
 
   return [storedValue, setValue] as const;
 }
 
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+  useEffect(() => {
+    const handler = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(handler);
+  }, [value, delay]);
+  return debouncedValue;
+}
+
+interface ToastMessage { id: number; message: string; actionLabel?: string; onAction?: () => void; }
+
 function useToast() {
-  const [toasts, setToasts] = useState<{ id: number; message: string }[]>([]);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
   const showToast = useCallback((message: string) => {
     const id = Date.now();
     setToasts(prev => [...prev, { id, message }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   }, []);
 
+  const showUndoToast = useCallback((message: string, onUndo: () => void) => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, actionLabel: 'Undo', onAction: onUndo }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 6000);
+  }, []);
+
   const ToastContainer = () => (
-    <div className="fixed bottom-20 md:bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none print:hidden">
+    <div className="fixed bottom-20 md:bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none print:hidden" role="status" aria-live="polite">
       {toasts.map(t => (
-        <div key={t.id} className="animate-in slide-in-from-bottom-2 fade-in duration-300 bg-foreground text-background px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 font-medium text-sm">
+        <div key={t.id} className="animate-in slide-in-from-bottom-2 fade-in duration-300 bg-foreground text-background px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 font-medium text-sm pointer-events-auto">
           <div className="p-1 bg-background/20 rounded-full"><Check className="h-3.5 w-3.5 text-background" /></div>
           {t.message}
+          {t.onAction && (
+            <button onClick={() => { t.onAction?.(); setToasts(prev => prev.filter(x => x.id !== t.id)); }} className="ml-1 underline font-bold text-chart-1 hover:text-white transition-colors">
+              {t.actionLabel}
+            </button>
+          )}
         </div>
       ))}
     </div>
   );
-  return { showToast, ToastContainer };
+  return { showToast, showUndoToast, ToastContainer };
 }
 
+const HOLIDAYS_CACHE_KEY = 'calc_bank_holidays_cache';
+const HOLIDAYS_TTL_MS = 24 * 60 * 60 * 1000;
+
 function useBankHolidays() {
-  const [holidays, setHolidays] = useState<Set<string>>(FALLBACK_BANK_HOLIDAYS);
+  const [holidays, setHolidays] = useState<Set<string>>(() => {
+    try {
+      const cached = JSON.parse(localStorage.getItem(HOLIDAYS_CACHE_KEY) || 'null');
+      if (cached && Date.now() - cached.fetchedAt < HOLIDAYS_TTL_MS) {
+        return new Set([...FALLBACK_BANK_HOLIDAYS, ...cached.dates]);
+      }
+    } catch { /* ignore */ }
+    return FALLBACK_BANK_HOLIDAYS;
+  });
+
   useEffect(() => {
-    fetch('https://www.gov.uk/bank-holidays.json')
+    const controller = new AbortController();
+    fetch('https://www.gov.uk/bank-holidays.json', { signal: controller.signal })
       .then(res => res.json())
       .then(data => {
         const ew = data['england-and-wales'].events.map((e: any) => e.date);
         setHolidays(new Set([...FALLBACK_BANK_HOLIDAYS, ...ew]));
+        try { localStorage.setItem(HOLIDAYS_CACHE_KEY, JSON.stringify({ dates: ew, fetchedAt: Date.now() })); } catch {}
       })
-      .catch(() => console.warn('Failed to fetch bank holidays, using fallback.'));
+      .catch(err => { if (err.name !== 'AbortError') console.warn('Failed to fetch bank holidays, using fallback.'); });
+    return () => controller.abort();
   }, []);
   return holidays;
 }
 
-// ─── 4. Reusable Sub-components ───────────────────────────────────────────────
+function useFxRate(currency: CurrencyCode, baseDate: string) {
+  const [rate, setRate] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-const NumInput = ({ value, onChange, prefix, suffix, placeholder = '0.00', 'aria-label': ariaLabel }: any) => (
+  useEffect(() => {
+    if (currency === 'GBP') { setRate(null); setError(null); setLoading(false); return; }
+    let cancelled = false;
+    setLoading(true); setError(null);
+    const datePart = baseDate > new Date().toISOString().slice(0, 10) ? 'latest' : baseDate;
+
+    fetch(`https://api.frankfurter.dev/v1/${datePart}?base=${currency}&symbols=GBP`)
+      .then(res => res.json())
+      .then(data => {
+        if (!cancelled && data?.rates?.GBP) {
+          setRate(data.rates.GBP);
+          if (datePart === 'latest' && baseDate > new Date().toISOString().slice(0, 10)) setError('future-date-fallback');
+        }
+      })
+      .catch(() => { if (!cancelled) setError('Exchange rate service offline.'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [currency, baseDate, refreshKey]);
+
+  return { rate, loading, error, refresh: () => setRefreshKey(k => k + 1) };
+}
+
+// ─── 3. Reusable Sub-components ───────────────────────────────────────────────
+
+const NumInput = ({ id, value, onChange, prefix, suffix, placeholder = '0.00', 'aria-label': ariaLabel }: any) => (
   <div className="relative group flex-1">
     {prefix && <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono pointer-events-none transition-colors group-focus-within:text-primary">{prefix}</span>}
     <input
+      id={id}
       type="number" value={value} onChange={e => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder}
       className={cn('w-full py-3 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200 tabular-nums text-base font-medium',
         prefix ? (prefix.length > 1 ? 'pl-16 pr-4' : 'pl-10 pr-4') : suffix ? 'pl-4 pr-10' : 'px-4')}
@@ -137,12 +243,11 @@ const SegmentedControl = ({ value, onChange, options, ariaLabel }: { value: stri
 );
 
 const ActionButton = ({ onClick, icon: Icon, label }: any) => (
-  <button onClick={onClick} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary-foreground/10 hover:bg-primary-foreground/20 text-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white" title={label} aria-label={label}>
+  <button onClick={onClick} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary-foreground/10 hover:bg-primary-foreground/20 text-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white print:hidden" title={label} aria-label={label}>
     <Icon className="h-3.5 w-3.5" /><span className="hidden sm:inline">{label}</span>
   </button>
 );
 
-// Smooth expandable container for toggled sections
 function AnimatedSection({ show, children, className }: { show: boolean, children: React.ReactNode, className?: string }) {
   return (
     <div className={cn("grid transition-all duration-400 ease-in-out", show ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0 pointer-events-none")}>
@@ -153,14 +258,56 @@ function AnimatedSection({ show, children, className }: { show: boolean, childre
   );
 }
 
-// ─── 5. Main Application Component ────────────────────────────────────────────
+function CollapsibleCard({ title, icon: Icon, children, defaultOpen = true }: any) {
+  return (
+    <details className="group [&_summary::-webkit-details-marker]:hidden bg-card border border-card-border rounded-2xl shadow-sm transition-all overflow-hidden" open={defaultOpen}>
+      <summary className="flex items-center gap-3 cursor-pointer p-6 hover:bg-input/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary border-b border-transparent group-open:border-border">
+        <div className="p-2 bg-primary/10 rounded-lg text-primary"><Icon className="h-5 w-5" /></div>
+        <div className="flex-1 font-bold text-lg">{title}</div>
+        <ChevronDown className="h-5 w-5 text-muted-foreground group-open:rotate-180 transition-transform duration-300" />
+      </summary>
+      <div className="p-6 pt-2 animate-in fade-in duration-300">
+        {children}
+      </div>
+    </details>
+  );
+}
+
+const Tooltip = ({ text }: { text: string }) => (
+  <div className="group/tooltip relative inline-flex ml-1.5 align-middle cursor-help print:hidden">
+    <button
+      type="button"
+      aria-label={text}
+      className="text-muted-foreground hover:text-primary focus-visible:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-full"
+    >
+      <Info className="h-3.5 w-3.5" />
+    </button>
+    <div
+      role="tooltip"
+      className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/tooltip:block group-focus-within/tooltip:block w-48 p-2.5 bg-foreground text-background text-xs font-medium rounded-lg shadow-xl z-50 text-center pointer-events-none animate-in fade-in zoom-in-95 duration-200"
+    >
+      {text}
+      <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-foreground" />
+    </div>
+  </div>
+);
+
+// ─── 4. Main Application Component ────────────────────────────────────────────
 
 export default function CalculatorPage() {
-  const { showToast, ToastContainer } = useToast();
+  const { showToast, showUndoToast, ToastContainer } = useToast();
   const bankHolidays = useBankHolidays();
   const [mode, setMode] = useState<'contract' | 'perm' | 'paydays'>('contract');
 
+  // Shared Global Print Headers
+  const [clientName, setClientName] = useState('');
+  const [candidateName, setCandidateName] = useState('');
+
   // Core Contract State
+  const [cCurrency, setCCurrency] = useLocalStorage<CurrencyCode>('calc_c_currency', 'GBP');
+  const [cFxDate, setCFxDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const cFx = useFxRate(cCurrency, cFxDate);
+
   const [consolidatedRate, setConsolidatedRate] = useState('');
   const [feeType, setFeeType] = useLocalStorage<'percentage' | 'fixed'>('calc_fee_type', 'percentage');
   const [margin, setMargin] = useLocalStorage('calc_margin', '15');
@@ -188,7 +335,7 @@ export default function CalculatorPage() {
   const [travelDays, setTravelDays] = useState('2');
   const [travelDayFull, setTravelDayFull] = useLocalStorage('calc_travel_full', false);
 
-  // Separate Travel Fee State (Applied only to Logistics/Costs)
+  // Separate Travel Fee State
   const [travelFeeType, setTravelFeeType] = useLocalStorage<'percentage' | 'fixed'>('calc_travel_fee_type', 'percentage');
   const [travelFee, setTravelFee] = useLocalStorage('calc_travel_fee', '15');
 
@@ -204,6 +351,7 @@ export default function CalculatorPage() {
   const [includePermNI, setIncludePermNI] = useLocalStorage('calc_perm_ni', false);
   const [pCurrency, setPCurrency] = useLocalStorage<CurrencyCode>('calc_currency', 'GBP');
   const [pFxDate, setPFxDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const pFx = useFxRate(pCurrency, pFxDate);
 
   // Paydays State
   const [pdPayrollType, setPdPayrollType] = useLocalStorage<'monthly' | 'fortnightly'>('calc_payroll_type', 'monthly');
@@ -222,73 +370,113 @@ export default function CalculatorPage() {
   const [pdDayRate, setPdDayRate] = useLocalStorage('calc_pd_day_rate', '');
   const [pdAdvance, setPdAdvance] = useLocalStorage('calc_pd_advance', '');
 
-  // FX Rate State
-  const [pFxRate, setPFxRate] = useState<number | null>(null);
-  const [pFxLoading, setPFxLoading] = useState(false);
-  const [pFxError, setPFxError] = useState<string | null>(null);
-  const [pFxRefreshKey, setPFxRefreshKey] = useState(0);
+  // Presets State
+  const [savedPresets, setSavedPresets] = useLocalStorage<Record<string, any>>('calc_presets', {});
+  const [newPresetName, setNewPresetName] = useState('');
 
-  // Reset Overrides if dates or modes change
+  // Apply Debounce Hook for heavy typing performance
+  const dbConsolidatedRate = useDebounce(consolidatedRate, 300);
+  const dbMargin = useDebounce(margin, 300);
+  const dbContingencyValue = useDebounce(contingencyValue, 300);
+  const dbSubTravel = useDebounce(subsistenceTravel, 300);
+  const dbSubOnboard = useDebounce(subsistenceOnboard, 300);
+  const dbTravelFee = useDebounce(travelFee, 300);
+  const dbWorkingDays = useDebounce(workingDays, 300);
+  const dbTravelDays = useDebounce(travelDays, 300);
+  const dbMobTravel = useDebounce(mobTravel, 300);
+  const dbMobVisas = useDebounce(mobVisas, 300);
+  const dbMobAgent = useDebounce(mobAgent, 300);
+  const dbSalary = useDebounce(salary, 300);
+  const dbPlacementFee = useDebounce(placementFee, 300);
+
   useEffect(() => {
     setSubDaysOverrides({});
   }, [pdStartDate, pdFinishDate, pdPayrollType, pdStartMode, pdStartCustomVal, pdFinishMode, pdFinishCustomVal]);
 
   const reset = () => {
+    const snapshot = { 
+      consolidatedRate, workingDays, travelDays, mobTravel, mobVisas, mobAgent, 
+      salary, contingencyValue, clientName, candidateName, pdStartDate, pdFinishDate, 
+      pdDayRate, pdAdvance, subDaysOverrides 
+    };
+
     setConsolidatedRate(''); setWorkingDays('28'); setTravelDays('2');
     setMobTravel(''); setMobVisas(''); setMobAgent(''); setSalary('50000');
-    setContingencyValue('');
+    setContingencyValue(''); setClientName(''); setCandidateName('');
     setPdStartDate(''); setPdFinishDate(''); setPdDayRate(''); setPdAdvance('');
     setSubDaysOverrides({});
-    showToast('Session values reset. Settings preserved.');
+
+    showUndoToast('Session values reset. Settings preserved.', () => {
+      setConsolidatedRate(snapshot.consolidatedRate); setWorkingDays(snapshot.workingDays); setTravelDays(snapshot.travelDays);
+      setMobTravel(snapshot.mobTravel); setMobVisas(snapshot.mobVisas); setMobAgent(snapshot.mobAgent); setSalary(snapshot.salary);
+      setContingencyValue(snapshot.contingencyValue); setClientName(snapshot.clientName); setCandidateName(snapshot.candidateName);
+      setPdStartDate(snapshot.pdStartDate); setPdFinishDate(snapshot.pdFinishDate); setPdDayRate(snapshot.pdDayRate); setPdAdvance(snapshot.pdAdvance);
+      setSubDaysOverrides(snapshot.subDaysOverrides);
+    });
   };
 
-  // FX Rate Effect
-  useEffect(() => {
-    if (pCurrency === 'GBP') { setPFxRate(null); setPFxError(null); return; }
-    let cancelled = false;
-    setPFxLoading(true); setPFxError(null);
-    const datePart = pFxDate > new Date().toISOString().slice(0, 10) ? 'latest' : pFxDate;
+  const savePreset = () => {
+    if (!newPresetName.trim()) return showToast('Please enter a preset name');
+    const snapshot = {
+      consolidatedRate, margin, cCurrency, feeType, 
+      includePension, includeAppyLevy, includeContingency, contingencyType, contingencyValue,
+      includeNI, niMode, seafarerExempt, 
+      includeSubsistence, subsistenceTravel, subsistenceOnboard, subsistenceInFee,
+      includeTrip, workingDays, travelDays, travelDayFull, travelFeeType, travelFee, logisticsInFee
+    };
+    setSavedPresets(prev => ({ ...prev, [newPresetName]: snapshot }));
+    setNewPresetName('');
+    showToast(`Preset "${newPresetName}" saved!`);
+  };
 
-    fetch(`https://api.frankfurter.dev/v1/${datePart}?base=${pCurrency}&symbols=GBP`)
-      .then(res => res.json())
-      .then(data => {
-        if (!cancelled && data?.rates?.GBP) {
-          setPFxRate(data.rates.GBP);
-          if (datePart === 'latest' && pFxDate > new Date().toISOString().slice(0, 10)) setPFxError('future-date-fallback');
-        }
-      })
-      .catch(() => { if (!cancelled) setPFxError('Exchange rate service offline.'); })
-      .finally(() => { if (!cancelled) setPFxLoading(false); });
-    return () => { cancelled = true; };
-  }, [pCurrency, pFxDate, pFxRefreshKey]);
+  const loadPreset = (name: string) => {
+    const data = savedPresets[name];
+    if (!data) return;
+    if (data.consolidatedRate !== undefined) setConsolidatedRate(data.consolidatedRate);
+    if (data.margin !== undefined) setMargin(data.margin);
+    if (data.cCurrency !== undefined) setCCurrency(data.cCurrency);
+    if (data.feeType !== undefined) setFeeType(data.feeType);
+    if (data.includePension !== undefined) setIncludePension(data.includePension);
+    if (data.includeAppyLevy !== undefined) setIncludeAppyLevy(data.includeAppyLevy);
+    if (data.includeContingency !== undefined) setIncludeContingency(data.includeContingency);
+    if (data.contingencyType !== undefined) setContingencyType(data.contingencyType);
+    if (data.contingencyValue !== undefined) setContingencyValue(data.contingencyValue);
+    if (data.includeNI !== undefined) setIncludeNI(data.includeNI);
+    if (data.niMode !== undefined) setNiMode(data.niMode);
+    if (data.seafarerExempt !== undefined) setSeafarerExempt(data.seafarerExempt);
+    if (data.includeSubsistence !== undefined) setIncludeSubsistence(data.includeSubsistence);
+    if (data.subsistenceTravel !== undefined) setSubsistenceTravel(data.subsistenceTravel);
+    if (data.subsistenceOnboard !== undefined) setSubsistenceOnboard(data.subsistenceOnboard);
+    if (data.subsistenceInFee !== undefined) setSubsistenceInFee(data.subsistenceInFee);
+    if (data.includeTrip !== undefined) setIncludeTrip(data.includeTrip);
+    if (data.workingDays !== undefined) setWorkingDays(data.workingDays);
+    if (data.travelDays !== undefined) setTravelDays(data.travelDays);
+    if (data.travelDayFull !== undefined) setTravelDayFull(data.travelDayFull);
+    if (data.travelFeeType !== undefined) setTravelFeeType(data.travelFeeType);
+    if (data.travelFee !== undefined) setTravelFee(data.travelFee);
+    if (data.logisticsInFee !== undefined) setLogisticsInFee(data.logisticsInFee);
+    showToast(`Preset "${name}" loaded!`);
+  };
 
   // ─── Memoized Calculations ───
 
   const contract = useMemo(() => {
-    const cRate = parseFloat(consolidatedRate) || 0;
-    const cMarginVal = parseFloat(margin) || 0;
-    const cTravelFeeVal = parseFloat(travelFee) || 0;
-    const cContingencyInputVal = parseFloat(contingencyValue) || 0;
+    const cRate = parseFloat(dbConsolidatedRate) || 0;
+    const cMarginVal = parseFloat(dbMargin) || 0;
+    const cTravelFeeVal = parseFloat(dbTravelFee) || 0;
+    const cContingencyInputVal = parseFloat(dbContingencyValue) || 0;
 
-    // ----------------------------------------------------
-    // Daily Additions (Pension, Levy, Contingency)
-    // ----------------------------------------------------
-    const cPension = includePension ? cRate * 0.04 : 0;
-    const cAppyLevy = includeAppyLevy ? cRate * 0.005 : 0;
+    const cPension = includePension ? cRate * FISCAL_RATES.pension : 0;
+    const cAppyLevy = includeAppyLevy ? cRate * FISCAL_RATES.apprenticeshipLevy : 0;
     const cContingency = includeContingency 
       ? (contingencyType === 'percentage' ? cRate * (cContingencyInputVal / 100) : cContingencyInputVal) 
       : 0;
 
     const cTotalAdditions = cPension + cAppyLevy + cContingency;
+    const cSubTravelAmt = includeSubsistence ? (parseFloat(dbSubTravel) || 0) : 0;
+    const cSubOnboardAmt = includeSubsistence ? (parseFloat(dbSubOnboard) || 0) : 0;
 
-    // Subsistence values
-    const cSubTravelAmt = includeSubsistence ? (parseFloat(subsistenceTravel) || 0) : 0;
-    const cSubOnboardAmt = includeSubsistence ? (parseFloat(subsistenceOnboard) || 0) : 0;
-
-    // ----------------------------------------------------
-    // Daily Onboard Charge 
-    // ----------------------------------------------------
-    const cNiMultiplier = (includeNI && !seafarerExempt) ? 0.155 : 0;
+    const cNiMultiplier = (includeNI && !seafarerExempt) ? FISCAL_RATES.employerNI : 0;
     const niBaseAmount = niMode === 'total' ? (cRate + cTotalAdditions) : cRate;
     const cEmployerNI = niBaseAmount * cNiMultiplier;
 
@@ -297,20 +485,16 @@ export default function CalculatorPage() {
 
     const cTotalCharge = cRate + cTotalAdditions + cEmployerNI + cSubOnboardAmt + cManagementFee;
 
-    // ----------------------------------------------------
-    // Travel Days Math (Decoupled to ensure 100% subsistence)
-    // ----------------------------------------------------
-    const nWorkingDays = Math.max(0, parseFloat(workingDays) || 0);
-    const nTravelDays = Math.max(0, parseFloat(travelDays) || 0);
+    const nWorkingDays = Math.max(0, parseFloat(dbWorkingDays) || 0);
+    const nTravelDays = Math.max(0, parseFloat(dbTravelDays) || 0);
 
     const travelRateMultiplier = travelDayFull ? 1 : 0.5;
     const travelPayableDays = nTravelDays * travelRateMultiplier; 
     const travelSubDays = Math.ceil(nTravelDays); 
 
-    // Apply multiplier to additions for travel calculation
     const cTravelRate = cRate * travelRateMultiplier;
-    const cTravelPension = includePension ? cTravelRate * 0.04 : 0;
-    const cTravelAppyLevy = includeAppyLevy ? cTravelRate * 0.005 : 0;
+    const cTravelPension = includePension ? cTravelRate * FISCAL_RATES.pension : 0;
+    const cTravelAppyLevy = includeAppyLevy ? cTravelRate * FISCAL_RATES.apprenticeshipLevy : 0;
     const cTravelContingency = includeContingency 
       ? (contingencyType === 'percentage' ? cTravelRate * (cContingencyInputVal / 100) : cContingencyInputVal * travelRateMultiplier) 
       : 0;
@@ -320,12 +504,10 @@ export default function CalculatorPage() {
     const travelNIBaseAmount = niMode === 'total' ? (cTravelRate + cTravelTotalAdditions) : cTravelRate;
     const cTravelNI = travelNIBaseAmount * cNiMultiplier;
 
-    // Daily Travel Reference
     const cTravelFeeBaseRef = cTravelRate + cTravelTotalAdditions + cTravelNI + (subsistenceInFee ? cSubTravelAmt : 0);
     const cTravelManagementFee = feeType === 'percentage' ? cTravelFeeBaseRef * (cMarginVal / 100) : cMarginVal;
     const cTravelDayCharge = cTravelRate + cTravelTotalAdditions + cTravelNI + cSubTravelAmt + cTravelManagementFee;
 
-    // Total Travel Block
     const totalTravelPay = travelPayableDays * cRate;
     const totalTravelAdditions = travelPayableDays * cTotalAdditions;
     const totalTravelNIBase = niMode === 'total' ? (totalTravelPay + totalTravelAdditions) : totalTravelPay;
@@ -339,12 +521,9 @@ export default function CalculatorPage() {
 
     const tripTravelTotal = totalTravelPay + totalTravelAdditions + totalTravelNI + totalTravelSub + totalTravelManagementFee;
 
-    // ----------------------------------------------------
-    // Logistics & Travel Costs (Where the separate Travel Fee is applied)
-    // ----------------------------------------------------
-    const fTravel = parseFloat(mobTravel) || 0;
-    const fVisas = parseFloat(mobVisas) || 0;
-    const fAgent = parseFloat(mobAgent) || 0;
+    const fTravel = parseFloat(dbMobTravel) || 0;
+    const fVisas = parseFloat(dbMobVisas) || 0;
+    const fAgent = parseFloat(dbMobAgent) || 0;
     const logisticsBase = fTravel + fVisas + fAgent;
 
     const logisticsFee = logisticsInFee 
@@ -352,9 +531,6 @@ export default function CalculatorPage() {
       : 0;
     const logisticsTotal = logisticsBase + logisticsFee;
 
-    // ----------------------------------------------------
-    // Grand Totals
-    // ----------------------------------------------------
     const tripWorkingTotal = nWorkingDays * cTotalCharge;
     const tripGrandTotal = tripWorkingTotal + tripTravelTotal + logisticsTotal;
 
@@ -368,28 +544,28 @@ export default function CalculatorPage() {
       tripWorkingTotal, tripTravelTotal, tripGrandTotal,
       totalBarVal: Math.max(cTotalCharge, 1)
     };
-  }, [consolidatedRate, feeType, margin, includePension, includeAppyLevy, includeContingency, contingencyType, contingencyValue, includeNI, niMode, seafarerExempt, subsistenceTravel, subsistenceOnboard, includeSubsistence, subsistenceInFee, travelDayFull, travelFeeType, travelFee, workingDays, travelDays, mobTravel, mobVisas, mobAgent, logisticsInFee]);
+  }, [dbConsolidatedRate, feeType, dbMargin, includePension, includeAppyLevy, includeContingency, contingencyType, dbContingencyValue, includeNI, niMode, seafarerExempt, dbSubTravel, dbSubOnboard, includeSubsistence, subsistenceInFee, travelDayFull, travelFeeType, dbTravelFee, dbWorkingDays, dbTravelDays, dbMobTravel, dbMobVisas, dbMobAgent, logisticsInFee]);
 
   const perm = useMemo(() => {
-    const pSalaryInput = parseFloat(salary) || 0;
-    const pFxReady = pCurrency === 'GBP' || pFxRate !== null;
-    const pSalary = pCurrency === 'GBP' ? pSalaryInput : (pFxRate !== null ? pSalaryInput * pFxRate : 0);
-    const pFeePct = parseFloat(placementFee) || 0;
+    const pSalaryInput = parseFloat(dbSalary) || 0;
+    const pFxReady = pCurrency === 'GBP' || pFx.rate !== null;
+    const pSalary = pCurrency === 'GBP' ? pSalaryInput : (pFx.rate !== null ? pSalaryInput * pFx.rate : 0);
+    const pFeePct = parseFloat(dbPlacementFee) || 0;
     const pPlacementFee = pFxReady ? pSalary * (pFeePct / 100) : 0;
-    const pEmployerNI = includePermNI ? Math.max(0, (pSalary - 9100) * 0.15) : 0;
+    const pEmployerNI = includePermNI ? Math.max(0, (pSalary - FISCAL_RATES.permNIThreshold) * FISCAL_RATES.permNI) : 0;
 
     return { pSalaryInput, pFxReady, pSalary, pFeePct, pPlacementFee, pEmployerNI, pTotalCost: pPlacementFee + pEmployerNI };
-  }, [salary, placementFee, includePermNI, pCurrency, pFxRate]);
+  }, [dbSalary, dbPlacementFee, includePermNI, pCurrency, pFx.rate]);
 
-  const paydays = useMemo(() => {
-    if (!pdStartDate || !pdFinishDate) return { splits: [], error: null, totalDays: null, totalSubDays: null, totalSub: null };
+  // STAGE 1 — raw paydays math (expensive, depends on dates/calendar logic)
+  const rawPaydays = useMemo(() => {
+    if (!pdStartDate || !pdFinishDate) return { splits: [], error: null };
     const start = parseDate(pdStartDate);
     const finish = parseDate(pdFinishDate);
-    if (finish < start) return { splits: [], error: 'Finish date must be on or after start date.', totalDays: null, totalSubDays: null, totalSub: null };
+    if (finish < start) return { splits: [], error: 'Finish date must be on or after start date.' };
 
     const startVal = pdStartMode === 'full' ? 1 : pdStartMode === 'half' ? 0.5 : parseFloat(pdStartCustomVal) || 0;
     const finishVal = pdFinishMode === 'full' ? 1 : pdFinishMode === 'half' ? 0.5 : parseFloat(pdFinishCustomVal) || 0;
-    const subAmt = pdIncludeSubsistence ? parseFloat(pdSubsistenceRate) || 0 : 0;
 
     const isWorkingDay = (d: Date) => !isWeekend(d) && !bankHolidays.has(isoDate(d));
     const monthlyPayday = (y: number, m: number) => {
@@ -460,26 +636,32 @@ export default function CalculatorPage() {
         i++;
       }
 
-      // Final Map applying any manual Sub Days overrides
-      const finalSplits = splits.map((s, idx) => {
-        const override = subDaysOverrides[idx];
-        const subDays = (override !== undefined && override !== '') ? (parseFloat(override) || 0) : s.days;
-        return { ...s, subDays };
-      });
-
-      return { 
-        splits: finalSplits, 
-        error: null, 
-        totalDays: finalSplits.reduce((sum, s) => sum + s.days, 0), 
-        totalSubDays: finalSplits.reduce((sum, s) => sum + s.subDays, 0),
-        totalSub: pdIncludeSubsistence ? finalSplits.reduce((sum, s) => sum + s.subDays * subAmt, 0) : null 
-      };
+      return { splits, error: null };
     } catch {
-      return { splits: [], error: 'Calculation failed.', totalDays: null, totalSubDays: null, totalSub: null };
+      return { splits: [], error: 'Calculation failed.' };
     }
-  }, [pdStartDate, pdFinishDate, pdPayrollType, pdStartMode, pdStartCustomVal, pdFinishMode, pdFinishCustomVal, pdIncludeSubsistence, pdSubsistenceRate, bankHolidays, subDaysOverrides]);
+  }, [pdStartDate, pdFinishDate, pdPayrollType, pdStartMode, pdStartCustomVal, pdFinishMode, pdFinishCustomVal, bankHolidays]);
 
-  // Payment Days derived math
+  // STAGE 2 — overrides and mapping (cheap, responds instantly to input tweaks)
+  const paydays = useMemo(() => {
+    if (rawPaydays.error || !rawPaydays.splits.length) {
+      return { splits: [], error: rawPaydays.error, totalDays: null, totalSubDays: null, totalSub: null };
+    }
+    const subAmt = pdIncludeSubsistence ? parseFloat(pdSubsistenceRate) || 0 : 0;
+    const finalSplits = rawPaydays.splits.map((s, idx) => {
+      const override = subDaysOverrides[idx];
+      const subDays = (override !== undefined && override !== '') ? (parseFloat(override) || 0) : s.days;
+      return { ...s, subDays };
+    });
+    return {
+      splits: finalSplits,
+      error: null,
+      totalDays: finalSplits.reduce((sum, s) => sum + s.days, 0),
+      totalSubDays: finalSplits.reduce((sum, s) => sum + s.subDays, 0),
+      totalSub: pdIncludeSubsistence ? finalSplits.reduce((sum, s) => sum + s.subDays * subAmt, 0) : null,
+    };
+  }, [rawPaydays, subDaysOverrides, pdIncludeSubsistence, pdSubsistenceRate]);
+
   const pdDayRateVal = parseFloat(pdDayRate) || 0;
   const pdAdvanceVal = parseFloat(pdAdvance) || 0;
   const pdTotalGross = (paydays.totalDays || 0) * pdDayRateVal;
@@ -488,49 +670,57 @@ export default function CalculatorPage() {
   // ─── Export Functions ───
   const copyContractBreakdown = () => {
     let text = `Maritime Contract Charge Breakdown (Per Day)\n-----------------------------------\n`;
-    text += `Consolidated Rate: ${formatCurrency(contract.cRate)}\n`;
-    if (includePension) text += `Pension (4%): ${formatCurrency(contract.cPension)}\n`;
-    if (includeAppyLevy) text += `Apprenticeship Levy (0.5%): ${formatCurrency(contract.cAppyLevy)}\n`;
-    if (includeContingency) text += `Contingency: ${formatCurrency(contract.cContingency)}\n`;
+    text += `Consolidated Rate: ${formatCurrencyIn(contract.cRate, cCurrency)}\n`;
+    if (includePension) text += `Pension (${FISCAL_RATES.pension * 100}%): ${formatCurrencyIn(contract.cPension, cCurrency)}\n`;
+    if (includeAppyLevy) text += `Apprenticeship Levy (${FISCAL_RATES.apprenticeshipLevy * 100}%): ${formatCurrencyIn(contract.cAppyLevy, cCurrency)}\n`;
+    if (includeContingency) text += `Contingency: ${formatCurrencyIn(contract.cContingency, cCurrency)}\n`;
 
     if (includeNI && !seafarerExempt) {
-      text += `Employer's NIC: ${formatCurrency(contract.cEmployerNI)}\n`;
+      text += `Employer's NIC: ${formatCurrencyIn(contract.cEmployerNI, cCurrency)}\n`;
     } else if (seafarerExempt) {
       text += `Employer's NIC: Exempt (Seafarer/Non-UKCS)\n`;
     }
 
     if (includeSubsistence && contract.cSubOnboardAmt > 0) {
-      text += `Victualling/Onboard Subsistence: ${formatCurrency(contract.cSubOnboardAmt)}\n`;
+      text += `Victualling/Onboard Subsistence: ${formatCurrencyIn(contract.cSubOnboardAmt, cCurrency)}\n`;
     }
 
-    text += `Management Fee (${contract.feeType === 'percentage' ? `${contract.cMarginVal}%` : 'Fixed'}): ${formatCurrency(contract.cManagementFee)}\n`;
+    text += `Management Fee (${contract.feeType === 'percentage' ? `${contract.cMarginVal}%` : 'Fixed'}): ${formatCurrencyIn(contract.cManagementFee, cCurrency)}\n`;
     text += `-----------------------------------\n`;
-    text += `Total Charge Rate (Onboard): ${formatCurrency(contract.cTotalCharge)}`;
+    text += `Total Charge Rate (Onboard): ${formatCurrencyIn(contract.cTotalCharge, cCurrency)}`;
 
-    navigator.clipboard.writeText(text);
-    showToast('Charge breakdown copied');
+    if (cCurrency !== 'GBP' && cFx.rate) {
+       text += `\nConverted Equivalent (GBP): ${formatCurrencyIn(contract.cTotalCharge * cFx.rate, 'GBP')} (@ 1 ${cCurrency} = ${cFx.rate.toFixed(4)} GBP)`;
+    }
+
+    copyText(text).then(ok => showToast(ok ? 'Charge breakdown copied' : 'Copy failed — please select and copy manually'));
   };
 
   const copyTripSummary = () => {
-    const text = `Hitch & Crew Change Invoice Summary
------------------------------------
-Hitch Days (${contract.nWorkingDays}): ${formatCurrency(contract.tripWorkingTotal)}
-Travel Days (${contract.nTravelDays}): ${formatCurrency(contract.tripTravelTotal)}
-${contract.logisticsTotal > 0 ? `Travel & Logistics Costs: ${formatCurrency(contract.logisticsTotal)}\n` : ''}-----------------------------------
-Total Hitch Invoice: ${formatCurrency(contract.tripGrandTotal)}`;
-    navigator.clipboard.writeText(text);
-    showToast('Hitch summary copied');
+    let text = `Hitch & Crew Change Invoice Summary\n-----------------------------------\n`;
+    text += `Hitch Days (${contract.nWorkingDays}): ${formatCurrencyIn(contract.tripWorkingTotal, cCurrency)}\n`;
+    text += `Travel Days (${contract.nTravelDays}): ${formatCurrencyIn(contract.tripTravelTotal, cCurrency)}\n`;
+    if (contract.logisticsTotal > 0) text += `Travel & Logistics Costs: ${formatCurrencyIn(contract.logisticsTotal, cCurrency)}\n`;
+    text += `-----------------------------------\n`;
+    text += `Total Hitch Invoice: ${formatCurrencyIn(contract.tripGrandTotal, cCurrency)}`;
+
+    if (cCurrency !== 'GBP' && cFx.rate) {
+       text += `\nConverted Equivalent (GBP): ${formatCurrencyIn(contract.tripGrandTotal * cFx.rate, 'GBP')} (@ 1 ${cCurrency} = ${cFx.rate.toFixed(4)} GBP)`;
+    }
+
+    copyText(text).then(ok => showToast(ok ? 'Hitch summary copied' : 'Copy failed — please select and copy manually'));
   };
 
   const copyPermSummary = () => {
-    const text = `Permanent Placement Summary
------------------------------------
-Annual Salary: ${formatCurrencyIn(perm.pSalaryInput, pCurrency)}
-${pCurrency !== 'GBP' ? `Converted Salary (GBP): ${formatCurrency(perm.pSalary)} (@ ${pFxRate?.toFixed(4)})\n` : ''}Placement Fee (${perm.pFeePct}%): ${formatCurrency(perm.pPlacementFee)}
-${includePermNI ? `Employer's NI: ${formatCurrency(perm.pEmployerNI)}\n` : ''}-----------------------------------
-Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? perm.pTotalCost : perm.pPlacementFee)}`;
-    navigator.clipboard.writeText(text);
-    showToast('Permanent summary copied');
+    let text = `Permanent Placement Summary\n-----------------------------------\n`;
+    text += `Annual Salary: ${formatCurrencyIn(perm.pSalaryInput, pCurrency)}\n`;
+    if (pCurrency !== 'GBP') text += `Converted Salary (GBP): ${formatCurrencyIn(perm.pSalary, 'GBP')} (@ 1 ${pCurrency} = ${pFx.rate?.toFixed(4) || '...'} GBP)\n`;
+    text += `Placement Fee (${perm.pFeePct}%): ${formatCurrencyIn(perm.pPlacementFee, 'GBP')}\n`;
+    if (includePermNI) text += `Employer's NI: ${formatCurrencyIn(perm.pEmployerNI, 'GBP')}\n`;
+    text += `-----------------------------------\n`;
+    text += `Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrencyIn(includePermNI ? perm.pTotalCost : perm.pPlacementFee, 'GBP')}`;
+
+    copyText(text).then(ok => showToast(ok ? 'Permanent summary copied' : 'Copy failed — please select and copy manually'));
   };
 
   const copyPaydaysSummary = () => {
@@ -542,15 +732,15 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
     text += `Total Payable Days: ${paydays.totalDays}\n`;
 
     if (pdIncludePay) {
-      text += `Day Rate: ${formatCurrency(pdDayRateVal)}\n`;
-      text += `Total Gross Pay: ${formatCurrency(pdTotalGross)}\n`;
+      text += `Day Rate: ${formatCurrencyIn(pdDayRateVal, 'GBP')}\n`;
+      text += `Total Gross Pay: ${formatCurrencyIn(pdTotalGross, 'GBP')}\n`;
       if (pdIncludeSubsistence && paydays.totalSub !== null && paydays.totalSub > 0) {
-         text += `Total Subsistence (${paydays.totalSubDays}d): ${formatCurrency(paydays.totalSub)}\n`;
+         text += `Total Subsistence (${paydays.totalSubDays}d): ${formatCurrencyIn(paydays.totalSub, 'GBP')}\n`;
       }
-      if (pdAdvanceVal > 0) text += `Advance Deduction: -${formatCurrency(pdAdvanceVal)}\n`;
-      text += `Total Net Pay: ${formatCurrency(pdTotalNet)}\n`;
+      if (pdAdvanceVal > 0) text += `Advance Deduction: -${formatCurrencyIn(pdAdvanceVal, 'GBP')}\n`;
+      text += `Total Net Pay: ${formatCurrencyIn(pdTotalNet, 'GBP')}\n`;
     } else if (pdIncludeSubsistence && paydays.totalSub !== null) {
-      text += `Total Subsistence (${paydays.totalSubDays}d): ${formatCurrency(paydays.totalSub)}\n`;
+      text += `Total Subsistence (${paydays.totalSubDays}d): ${formatCurrencyIn(paydays.totalSub, 'GBP')}\n`;
     }
 
     text += `-----------------------------------\n\n`;
@@ -561,16 +751,15 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
       text += `Payable Days: ${s.days % 1 === 0 ? s.days.toFixed(0) : formatNumber(s.days)}`;
 
       if (pdIncludePay && pdDayRateVal > 0) {
-         text += ` | Gross Pay: ${formatCurrency(s.days * pdDayRateVal)}`;
+         text += ` | Gross Pay: ${formatCurrencyIn(s.days * pdDayRateVal, 'GBP')}`;
       }
       if (pdIncludeSubsistence && subAmt > 0) {
-         text += ` | Subsistence (${s.subDays}d): ${formatCurrency(s.subDays * subAmt)}`;
+         text += ` | Subsistence (${s.subDays}d): ${formatCurrencyIn(s.subDays * subAmt, 'GBP')}`;
       }
       text += `\n\n`;
     });
 
-    navigator.clipboard.writeText(text.trim());
-    showToast('Payment schedule copied');
+    copyText(text.trim()).then(ok => showToast(ok ? 'Payment schedule copied' : 'Copy failed — please select and copy manually'));
   };
 
   const exportScheduleCSV = () => {
@@ -616,9 +805,34 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
             <h1 className="text-3xl font-bold tracking-tight text-foreground flex items-center gap-3">Maritime Fee Calculator</h1>
             <p className="mt-2 text-muted-foreground font-medium">Specialised breakdown for seafarer hitch rotations, logistics, and margins.</p>
           </div>
-          <button onClick={reset} className="flex items-center gap-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors px-4 py-2 rounded-lg hover:bg-input/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-            <RotateCcw className="h-4 w-4" />Reset Values
-          </button>
+
+          <div className="flex flex-col sm:items-end gap-3">
+            <div className="flex flex-wrap items-center gap-2 bg-input/20 p-2 rounded-xl border border-input/40">
+               <select 
+                 className="px-3 py-2 bg-background border border-input rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none"
+                 onChange={(e) => { if (e.target.value) loadPreset(e.target.value); e.target.value = ""; }}
+                 aria-label="Load Preset"
+               >
+                 <option value="">Load Preset...</option>
+                 {Object.keys(savedPresets).map(p => <option key={p} value={p}>{p}</option>)}
+               </select>
+               <div className="flex gap-1 items-center">
+                 <input 
+                   type="text" 
+                   placeholder="Preset name" 
+                   value={newPresetName} 
+                   onChange={e=>setNewPresetName(e.target.value)} 
+                   className="px-3 py-2 bg-background border border-input rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none w-32"
+                 />
+                 <button onClick={savePreset} className="p-2 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity" title="Save Preset" aria-label="Save Preset">
+                   <Save className="h-4 w-4" />
+                 </button>
+               </div>
+            </div>
+            <button onClick={reset} className="flex items-center gap-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors px-4 py-2 rounded-lg hover:bg-input/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+              <RotateCcw className="h-4 w-4" />Reset Values
+            </button>
+          </div>
         </header>
 
         <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)} className="w-full">
@@ -631,29 +845,80 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
           {/* ─────────────── MARITIME CONTRACT TAB ─────────────── */}
           <TabsContent value="contract" className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-400">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              <div className="lg:col-span-5 flex flex-col gap-6">
+              <div className="lg:col-span-5 flex flex-col gap-6 print:hidden">
 
-                {/* Core inputs */}
-                <div className="bg-card border border-card-border p-7 rounded-2xl shadow-sm space-y-6">
-                  <h2 className="text-lg font-bold border-b border-border pb-4">Day Rate & Tax</h2>
+                <CollapsibleCard title="Day Rate & Tax" icon={FileText} defaultOpen>
+                  <div className="space-y-4 mb-4">
+                    <label className="block text-sm font-bold text-foreground">Currency</label>
+                    <SegmentedControl 
+                      value={cCurrency} 
+                      onChange={setCCurrency} 
+                      options={CURRENCIES.map(c => ({label: c, value: c}))} 
+                      ariaLabel="Contract Currency"
+                    />
+                  </div>
+
+                  <AnimatedSection show={cCurrency !== 'GBP'}>
+                    <div className="space-y-3 p-4 bg-input/30 border border-input rounded-xl mb-6">
+                      <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+                        <Globe className="h-4 w-4" />Exchange Rate
+                      </div>
+                      <div className="space-y-1">
+                        <label htmlFor="c-fx-date" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Placement / Start Date</label>
+                        <input
+                          id="c-fx-date"
+                          type="date"
+                          value={cFxDate}
+                          onChange={e => setCFxDate(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg bg-card/60 px-3 py-2.5">
+                        <div className="text-sm font-medium">
+                          {cFx.loading ? (
+                            <span className="text-muted-foreground">Fetching rate…</span>
+                          ) : cFx.rate !== null ? (
+                            <span className="font-mono font-bold animate-in fade-in duration-300">
+                              1 {cCurrency} = {cFx.rate.toFixed(4)} GBP
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">No rate yet</span>
+                          )}
+                        </div>
+                        <button onClick={cFx.refresh} aria-label="Refresh exchange rate" className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-input/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                          <RefreshCw className={cn('h-3.5 w-3.5', cFx.loading && 'animate-spin')} />
+                        </button>
+                      </div>
+                      {cFx.error === 'future-date-fallback' && (
+                        <div className="flex items-start gap-2 text-xs text-amber-500/90 font-medium">
+                          <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                          <span>Future date selected. Showing today's latest rate instead.</span>
+                        </div>
+                      )}
+                    </div>
+                  </AnimatedSection>
+
                   <div className="space-y-2">
-                    <label className="block text-sm font-bold">Consolidated Rate — Seafarer Pay (£/day)</label>
-                    <NumInput value={consolidatedRate} onChange={setConsolidatedRate} prefix="£" aria-label="Consolidated Rate" />
+                    <label htmlFor="consolidated-rate" className="block text-sm font-bold">Consolidated Rate — Seafarer Pay</label>
+                    <NumInput id="consolidated-rate" value={consolidatedRate} onChange={setConsolidatedRate} prefix={curSym(cCurrency)} aria-label="Consolidated Rate" />
                   </div>
 
                   <div className="space-y-3 pt-2">
                     <div className="flex justify-between group">
                       <div className="space-y-1 pr-4">
                         <label className="text-sm font-bold cursor-pointer group-hover:text-primary transition-colors" onClick={() => setIncludePension(!includePension)}>Include Pension</label>
-                        <p className="text-xs text-muted-foreground font-medium">Standard 4% addition</p>
+                        <p className="text-xs text-muted-foreground font-medium">Standard {FISCAL_RATES.pension * 100}% addition</p>
                       </div>
                       <Switch checked={includePension} onCheckedChange={setIncludePension} />
                     </div>
 
                     <div className="flex justify-between group">
                       <div className="space-y-1 pr-4">
-                        <label className="text-sm font-bold cursor-pointer group-hover:text-primary transition-colors" onClick={() => setIncludeAppyLevy(!includeAppyLevy)}>Include Apprenticeship Levy</label>
-                        <p className="text-xs text-muted-foreground font-medium">Standard 0.5% addition</p>
+                        <label className="text-sm font-bold flex items-center cursor-pointer group-hover:text-primary transition-colors" onClick={() => setIncludeAppyLevy(!includeAppyLevy)}>
+                          Include Apprenticeship Levy
+                          <Tooltip text="A 0.5% tax on large employers to fund apprenticeship training." />
+                        </label>
+                        <p className="text-xs text-muted-foreground font-medium">Standard {FISCAL_RATES.apprenticeshipLevy * 100}% addition</p>
                       </div>
                       <Switch checked={includeAppyLevy} onCheckedChange={setIncludeAppyLevy} />
                     </div>
@@ -671,14 +936,15 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                               <SegmentedControl 
                                 value={contingencyType} 
                                 onChange={setContingencyType} 
-                                options={[{label: '%', value: 'percentage'}, {label: '£', value: 'fixed'}]} 
+                                options={[{label: '%', value: 'percentage'}, {label: curSym(cCurrency), value: 'fixed'}]} 
                                 ariaLabel="Contingency Type"
                               />
                             </div>
                             <NumInput 
+                              id="contingency-val"
                               value={contingencyValue} 
                               onChange={setContingencyValue} 
-                              prefix={contingencyType === 'fixed' ? '£' : undefined} 
+                              prefix={contingencyType === 'fixed' ? curSym(cCurrency) : undefined} 
                               suffix={contingencyType === 'percentage' ? '%' : undefined} 
                               placeholder="0.0" 
                             />
@@ -687,28 +953,29 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                     </div>
                   </div>
 
-                  <div className="space-y-2 pt-2 border-t border-border/60">
+                  <div className="space-y-2 pt-4 border-t border-border/60 mt-4">
                     <div className="flex items-center justify-between">
-                      <label className="block text-sm font-bold">Management Fee</label>
+                      <label htmlFor="management-margin" className="block text-sm font-bold">Management Fee</label>
                       <div className="w-32">
                         <SegmentedControl 
                           value={feeType} 
                           onChange={setFeeType} 
-                          options={[{label: '%', value: 'percentage'}, {label: '£', value: 'fixed'}]} 
+                          options={[{label: '%', value: 'percentage'}, {label: curSym(cCurrency), value: 'fixed'}]} 
                           ariaLabel="Management Fee Type"
                         />
                       </div>
                     </div>
                     <NumInput 
+                      id="management-margin"
                       value={margin} 
                       onChange={setMargin} 
-                      prefix={feeType === 'fixed' ? '£' : undefined} 
+                      prefix={feeType === 'fixed' ? curSym(cCurrency) : undefined} 
                       suffix={feeType === 'percentage' ? '%' : undefined} 
                       placeholder="0.0" 
                     />
                   </div>
 
-                  <div className="pt-4 space-y-4 border-t border-border/60">
+                  <div className="pt-4 space-y-4 border-t border-border/60 mt-4">
                     <div className="flex justify-between group">
                       <div className="space-y-1 pr-4">
                         <label className="text-sm font-bold cursor-pointer group-hover:text-primary transition-colors" onClick={() => setIncludeNI(!includeNI)}>Include Employer's NI</label>
@@ -732,7 +999,10 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                         </div>
                         <div className="flex justify-between items-center pt-2 border-t border-amber-500/20">
                           <div className="space-y-0.5 pr-4">
-                            <label className="text-sm font-bold text-amber-600 dark:text-amber-400 cursor-pointer" onClick={() => setSeafarerExempt(!seafarerExempt)}>Seafarer Exemption</label>
+                            <label className="text-sm font-bold text-amber-600 dark:text-amber-400 flex items-center cursor-pointer" onClick={() => setSeafarerExempt(!seafarerExempt)}>
+                              Seafarer Exemption
+                              <Tooltip text="UK Continental Shelf. Vessels operating wholly outside this may be exempt from Employer's NI." />
+                            </label>
                             <p className="text-xs text-amber-600/80 dark:text-amber-400/80 font-medium">Non-UK flagged / outside UKCS.</p>
                           </div>
                           <Switch checked={seafarerExempt} onCheckedChange={setSeafarerExempt} className="data-[state=checked]:bg-amber-500" />
@@ -740,26 +1010,25 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                       </div>
                     </AnimatedSection>
                   </div>
-                </div>
+                </CollapsibleCard>
 
-                {/* Split Subsistence */}
-                <div className="bg-card border border-card-border p-7 rounded-2xl shadow-sm">
-                  <div className="flex items-center gap-3 border-b border-border pb-4">
-                    <div className="p-2 bg-primary/10 rounded-lg text-primary"><UtensilsCrossed className="h-4 w-4" /></div>
-                    <div className="flex-1">
-                      <h2 className="text-base font-bold">Subsistence & Victualling</h2>
-                    </div>
+                <CollapsibleCard title="Subsistence & Victualling" icon={UtensilsCrossed} defaultOpen={false}>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-bold cursor-pointer flex items-center" onClick={() => setIncludeSubsistence(!includeSubsistence)}>
+                      Enable Subsistence
+                      <Tooltip text="Food and provisions provided onboard. Typically £0 as covered by the vessel." />
+                    </label>
                     <Switch checked={includeSubsistence} onCheckedChange={(v) => { setIncludeSubsistence(v); if (!v) setSubsistenceInFee(false); }} />
                   </div>
-                  <AnimatedSection show={includeSubsistence} className="pt-4 space-y-5">
+                  <AnimatedSection show={includeSubsistence} className="pt-3 space-y-5 border-t border-border/40 mt-3">
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2">
-                        <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel (£/day)</label>
-                        <NumInput value={subsistenceTravel} onChange={setSubsistenceTravel} prefix="£" />
+                        <label htmlFor="sub-travel" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel</label>
+                        <NumInput id="sub-travel" value={subsistenceTravel} onChange={setSubsistenceTravel} prefix={curSym(cCurrency)} />
                       </div>
                       <div className="space-y-2">
-                        <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Onboard (£/day)</label>
-                        <NumInput value={subsistenceOnboard} onChange={setSubsistenceOnboard} prefix="£" />
+                        <label htmlFor="sub-onboard" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Onboard</label>
+                        <NumInput id="sub-onboard" value={subsistenceOnboard} onChange={setSubsistenceOnboard} prefix={curSym(cCurrency)} />
                       </div>
                     </div>
                     <div className="flex justify-between group">
@@ -769,29 +1038,27 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                       <Switch checked={subsistenceInFee} onCheckedChange={setSubsistenceInFee} disabled={!includeSubsistence} />
                     </div>
                   </AnimatedSection>
-                </div>
+                </CollapsibleCard>
 
-                {/* Hitch Calculator */}
-                <div className="bg-card border border-card-border p-7 rounded-2xl shadow-sm">
-                  <div className="flex items-center gap-3 border-b border-border pb-4">
-                    <div className="p-2 bg-primary/10 rounded-lg text-primary"><Anchor className="h-4 w-4" /></div>
-                    <div className="flex-1">
-                      <h2 className="text-base font-bold">Hitch & Mob/Demob Scheduler</h2>
-                    </div>
+                <CollapsibleCard title="Hitch & Mob/Demob Scheduler" icon={Anchor} defaultOpen={false}>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-bold cursor-pointer" onClick={() => setIncludeTrip(!includeTrip)}>
+                      Enable Hitch Scheduler
+                    </label>
                     <Switch checked={includeTrip} onCheckedChange={setIncludeTrip} />
                   </div>
 
-                  <AnimatedSection show={includeTrip} className="pt-4 space-y-5">
+                  <AnimatedSection show={includeTrip} className="pt-3 space-y-5 border-t border-border/40 mt-3">
                     <div className="space-y-2">
-                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Days Onboard</label>
-                      <NumInput value={workingDays} onChange={setWorkingDays} placeholder="28" />
+                      <label htmlFor="working-days" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Days Onboard</label>
+                      <NumInput id="working-days" value={workingDays} onChange={setWorkingDays} placeholder="28" />
                     </div>
 
                     <div className="space-y-4 pt-4 border-t border-border/50">
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel Days</label>
-                          <NumInput value={travelDays} onChange={setTravelDays} placeholder="2" />
+                          <label htmlFor="travel-days" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel Days</label>
+                          <NumInput id="travel-days" value={travelDays} onChange={setTravelDays} placeholder="2" />
                         </div>
                         <div className="space-y-2">
                           <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Charge Rate</label>
@@ -816,42 +1083,41 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                         </div>
                       </div>
                       <div className="grid grid-cols-3 gap-2">
-                        <NumInput value={mobTravel} onChange={setMobTravel} placeholder="Travel" prefix="£" />
-                        <NumInput value={mobVisas} onChange={setMobVisas} placeholder="VISA / Cert." prefix="£" />
-                        <NumInput value={mobAgent} onChange={setMobAgent} placeholder="Agent" prefix="£" />
+                        <NumInput id="mob-travel" value={mobTravel} onChange={setMobTravel} placeholder="Travel" prefix={curSym(cCurrency)} aria-label="Mobilization Travel Cost" />
+                        <NumInput id="mob-visas" value={mobVisas} onChange={setMobVisas} placeholder="VISA / Cert." prefix={curSym(cCurrency)} aria-label="Visas Cost" />
+                        <NumInput id="mob-agent" value={mobAgent} onChange={setMobAgent} placeholder="Agent" prefix={curSym(cCurrency)} aria-label="Agent Cost" />
                       </div>
 
                       <AnimatedSection show={logisticsInFee} className="space-y-2 pt-3">
                         <div className="flex items-center justify-between">
-                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel Fee</label>
+                          <label htmlFor="travel-fee-amount" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel Fee</label>
                           <div className="w-28">
                             <SegmentedControl 
                               value={travelFeeType} 
                               onChange={setTravelFeeType} 
-                              options={[{label: '%', value: 'percentage'}, {label: '£', value: 'fixed'}]} 
+                              options={[{label: '%', value: 'percentage'}, {label: curSym(cCurrency), value: 'fixed'}]} 
                               ariaLabel="Travel Fee Type"
                             />
                           </div>
                         </div>
                         <NumInput 
+                          id="travel-fee-amount"
                           value={travelFee} 
                           onChange={setTravelFee} 
-                          prefix={travelFeeType === 'fixed' ? '£' : undefined} 
+                          prefix={travelFeeType === 'fixed' ? curSym(cCurrency) : undefined} 
                           suffix={travelFeeType === 'percentage' ? '%' : undefined} 
                           placeholder="0.0" 
                         />
                       </AnimatedSection>
                     </div>
                   </AnimatedSection>
-                </div>
-
-                <AssumptionsAccordion maritime={true} />
+                </CollapsibleCard>
               </div>
 
               {/* Right panel */}
-              <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative transition-all duration-500">
+              <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative transition-all duration-500 print:col-span-12 print:shadow-none print:w-full print:bg-white print:text-black print:border-2">
                 {contract.cRate === 0 && !consolidatedRate ? (
-                  <div className="absolute inset-0 z-10 bg-primary/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500">
+                  <div className="absolute inset-0 z-10 bg-primary/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
                     <div className="p-4 bg-primary-foreground/10 rounded-full mb-4">
                       <Ship className="h-8 w-8 text-primary-foreground/60" />
                     </div>
@@ -863,15 +1129,21 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                 ) : null}
 
                 <div className="p-8 md:p-10 flex-grow relative">
+                  <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4 print:mb-6">
+                    <input type="text" placeholder="Client Name (Optional)" aria-label="Client Name" value={clientName} onChange={e=>setClientName(e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
+                    <input type="text" placeholder="Candidate Name (Optional)" aria-label="Candidate Name" value={candidateName} onChange={e=>setCandidateName(e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
+                  </div>
+
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
                     <h2 className="text-xl font-bold">Charge Rate Breakdown</h2>
                     <div className="flex items-center gap-3">
                       <ActionButton onClick={copyContractBreakdown} icon={Copy} label="Copy" />
-                      <span className="text-xs uppercase tracking-widest font-bold px-3 py-1.5 bg-primary-foreground/10 rounded-full">Per Day Onboard</span>
+                      <span className="text-xs uppercase tracking-widest font-bold px-3 py-1.5 bg-primary-foreground/10 rounded-full print:bg-gray-200">Per Day Onboard</span>
                     </div>
                   </div>
 
-                  <div className="w-full h-3 bg-primary-foreground/10 rounded-full mb-6 overflow-hidden flex transition-all duration-500">
+                  {/* Decorative allocation bar */}
+                  <div aria-hidden="true" className="w-full h-3 bg-primary-foreground/10 rounded-full mb-6 overflow-hidden flex transition-all duration-500 print:hidden">
                     <div className="bg-white h-full transition-all duration-500" style={{ width: `${(contract.cRate / contract.totalBarVal) * 100}%` }} title="Worker Pay" />
                     <div className="bg-white/80 h-full transition-all duration-500 border-l border-primary/20" style={{ width: `${(contract.cTotalAdditions / contract.totalBarVal) * 100}%` }} title="Additions" />
                     <div className="bg-white/60 h-full transition-all duration-500 border-l border-primary/20" style={{ width: `${(contract.cEmployerNI / contract.totalBarVal) * 100}%` }} title="Employer NI" />
@@ -880,124 +1152,147 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                   </div>
 
                   <div className="space-y-3 relative z-0">
-                    <LineItem label="Consolidated Day Rate" value={contract.cRate} isBold />
+                    <LineItem label="Consolidated Day Rate" value={contract.cRate} isBold currency={cCurrency} />
 
-                    {includePension && <LineItem label="Pension (4%)" value={contract.cPension} />}
-                    {includeAppyLevy && <LineItem label="Apprenticeship Levy (0.5%)" value={contract.cAppyLevy} />}
-                    {includeContingency && <LineItem label={`Contingency (${contingencyType === 'percentage' && contract.cContingency > 0 ? contingencyValue + '%' : 'Fixed'})`} value={contract.cContingency} />}
+                    {includePension && <LineItem label={`Pension (${FISCAL_RATES.pension * 100}%)`} value={contract.cPension} currency={cCurrency} />}
+                    {includeAppyLevy && <LineItem label={`Apprenticeship Levy (${FISCAL_RATES.apprenticeshipLevy * 100}%)`} value={contract.cAppyLevy} currency={cCurrency} />}
+                    {includeContingency && <LineItem label={`Contingency (${contingencyType === 'percentage' && contract.cContingency > 0 ? dbContingencyValue + '%' : 'Fixed'})`} value={contract.cContingency} currency={cCurrency} />}
 
                     {includeNI && (
                       <LineItem 
-                        label={seafarerExempt ? "Employers NIC (Exempt)" : "Employers NIC (15.5%)"} 
+                        label={seafarerExempt ? "Employers NIC (Exempt)" : `Employers NIC (${FISCAL_RATES.employerNI * 100}%)`} 
                         value={contract.cEmployerNI} 
+                        currency={cCurrency}
                       />
                     )}
-                    {includeSubsistence && contract.cSubOnboardAmt > 0 && <LineItem label="Onboard Victualling/Sub" value={contract.cSubOnboardAmt} />}
-                    <LineItem label={`Management Fee (${contract.feeType === 'percentage' && contract.cMarginVal > 0 ? `${contract.cMarginVal}%` : 'Fixed'})`} value={contract.cManagementFee} />
+                    {includeSubsistence && contract.cSubOnboardAmt > 0 && <LineItem label="Onboard Victualling/Sub" value={contract.cSubOnboardAmt} currency={cCurrency} />}
+                    <LineItem label={`Management Fee (${contract.feeType === 'percentage' && contract.cMarginVal > 0 ? `${contract.cMarginVal}%` : 'Fixed'})`} value={contract.cManagementFee} currency={cCurrency} />
 
                     {contract.cMarginVal > 0 && contract.cTotalCharge > 0 && (
-                      <div className="text-xs text-primary-foreground/60 font-medium bg-primary-foreground/5 p-2.5 rounded-lg mt-1 flex items-center gap-2">
+                      <div className="text-xs text-primary-foreground/60 print:text-gray-500 font-medium bg-primary-foreground/5 p-2.5 rounded-lg mt-1 flex items-center gap-2 print:bg-gray-50 print:border print:border-gray-200">
                         <Info className="h-3.5 w-3.5 shrink-0" />
                         <span>
                           Fee = {contract.feeType === 'percentage' 
-                            ? `${contract.cMarginVal}% × (${formatCurrency(contract.cRate)} 
+                            ? `${contract.cMarginVal}% × (${formatCurrencyIn(contract.cRate, cCurrency)} 
                               ${contract.cTotalAdditions > 0 ? ` + Additions` : ''} 
                               ${includeNI && !seafarerExempt ? ` + NI` : ''} 
                               ${subsistenceInFee && contract.cSubOnboardAmt > 0 ? ` + Sub` : ''})` 
-                            : `${formatCurrency(contract.cMarginVal)} Flat`}
+                            : `${formatCurrencyIn(contract.cMarginVal, cCurrency)} Flat`}
                         </span>
                       </div>
                     )}
 
-                    <div className="mt-4 pt-5 border-t-2 border-primary-foreground/30 flex items-center justify-between">
+                    <div className="mt-4 pt-5 border-t-2 border-primary-foreground/30 print:border-gray-300 flex items-center justify-between">
                       <span className="text-lg font-bold">Total Charge (Onboard)</span>
-                      <span className="text-3xl font-mono font-bold tracking-tight text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={contract.cTotalCharge}>{formatCurrency(contract.cTotalCharge)}</span>
+                      <span className="text-3xl font-mono font-bold tracking-tight text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={contract.cTotalCharge}>{formatCurrencyIn(contract.cTotalCharge, cCurrency)}</span>
                     </div>
+
+                    <div aria-live="polite" className="sr-only">
+                      Total charge is {formatCurrencyIn(contract.cTotalCharge, cCurrency)} per day
+                    </div>
+
+                    {cCurrency !== 'GBP' && cFx.rate !== null && (
+                      <div className="flex items-center justify-between pt-2 text-sm text-primary-foreground/60 print:text-gray-500 border-t border-primary-foreground/10 print:border-gray-200">
+                         <span>Converted Equivalency (@ {cFx.rate.toFixed(4)})</span>
+                         <span className="font-mono font-bold tabular-nums text-white print:text-black">{formatCurrencyIn(contract.cTotalCharge * cFx.rate, 'GBP')}</span>
+                      </div>
+                    )}
                   </div>
 
-                  <AnimatedSection show={includeTrip} className="mt-8 pt-6 border-t border-primary-foreground/20">
+                  <AnimatedSection show={includeTrip} className="mt-8 pt-6 border-t border-primary-foreground/20 print:border-gray-300">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-sm font-bold uppercase tracking-widest text-primary-foreground/60">Single Travel Day Reference</h3>
-                      <span className="text-xs font-bold px-2.5 py-1 bg-primary-foreground/10 rounded-full">{travelDayFull ? 'Full' : '0.5'} day rate</span>
+                      <h3 className="text-sm font-bold uppercase tracking-widest text-primary-foreground/60 print:text-gray-500">Single Travel Day Reference</h3>
+                      <span className="text-xs font-bold px-2.5 py-1 bg-primary-foreground/10 rounded-full print:bg-gray-200">{travelDayFull ? 'Full' : '0.5'} day rate</span>
                     </div>
                     <div className="space-y-2.5">
-                      <LineItem label={`Consolidated Rate (×${travelDayFull ? '1' : '0.5'})`} value={contract.cTravelRate} />
-                      {includePension && <LineItem label="Pension" value={contract.cTravelRate * 0.04} />}
-                      {includeAppyLevy && <LineItem label="Apprenticeship Levy" value={contract.cTravelRate * 0.005} />}
-                      {includeContingency && <LineItem label="Contingency" value={contract.cTravelContingency} />}
-                      {includeNI && !seafarerExempt && <LineItem label="Employers NIC" value={contract.cTravelNI} />}
-                      {includeSubsistence && contract.cSubTravelAmt > 0 && <LineItem label="Travel Subsistence (Always 100%)" value={contract.cSubTravelAmt} />}
-                      <LineItem label={`Management Fee (Main)`} value={contract.cTravelManagementFee} />
-                      <div className="pt-3 border-t border-primary-foreground/20 flex items-center justify-between">
+                      <LineItem label={`Consolidated Rate (×${travelDayFull ? '1' : '0.5'})`} value={contract.cTravelRate} currency={cCurrency} />
+                      {includePension && <LineItem label="Pension" value={contract.cTravelRate * FISCAL_RATES.pension} currency={cCurrency} />}
+                      {includeAppyLevy && <LineItem label="Apprenticeship Levy" value={contract.cTravelRate * FISCAL_RATES.apprenticeshipLevy} currency={cCurrency} />}
+                      {includeContingency && <LineItem label="Contingency" value={contract.cTravelContingency} currency={cCurrency} />}
+                      {includeNI && !seafarerExempt && <LineItem label="Employers NIC" value={contract.cTravelNI} currency={cCurrency} />}
+                      {includeSubsistence && contract.cSubTravelAmt > 0 && <LineItem label="Travel Subsistence (Always 100%)" value={contract.cSubTravelAmt} currency={cCurrency} />}
+                      <LineItem label={`Management Fee (Main)`} value={contract.cTravelManagementFee} currency={cCurrency} />
+                      <div className="pt-3 border-t border-primary-foreground/20 print:border-gray-300 flex items-center justify-between">
                         <span className="text-sm font-bold">Travel Day Total</span>
-                        <span className="font-mono font-bold text-base text-chart-1 tabular-nums transition-all">{formatCurrency(contract.cTravelDayCharge)}</span>
+                        <span className="font-mono font-bold text-base text-chart-1 tabular-nums transition-all">{formatCurrencyIn(contract.cTravelDayCharge, cCurrency)}</span>
                       </div>
                     </div>
                   </AnimatedSection>
                 </div>
 
-                <div className="bg-primary-foreground/5 p-8 md:p-10 border-t border-primary-foreground/10 relative z-0">
+                <div className="bg-primary-foreground/5 print:bg-gray-50 p-8 md:p-10 border-t border-primary-foreground/10 print:border-gray-200 relative z-0">
                   {includeTrip ? (
                     <div className="animate-in fade-in duration-300">
                       <div className="flex items-center justify-between mb-6">
-                        <h3 className="text-xs font-bold uppercase tracking-widest text-primary-foreground/60">Hitch Crew-Change Invoice</h3>
-                        <ActionButton onClick={copyTripSummary} icon={Copy} label="Copy" />
+                        <h3 className="text-xs font-bold uppercase tracking-widest text-primary-foreground/60 print:text-gray-500">Hitch Crew-Change Invoice</h3>
+                        <div className="flex gap-2">
+                           <ActionButton onClick={copyTripSummary} icon={Copy} label="Copy" />
+                           <ActionButton onClick={printSchedule} icon={Printer} label="Print" />
+                        </div>
                       </div>
                       <div className="space-y-4">
 
-                        {/* Working Days Total */}
-                        <div className="bg-primary-foreground/5 p-4 rounded-xl space-y-2 hover:bg-primary-foreground/10 transition-colors">
-                          <div className="flex items-center justify-between text-sm font-bold text-primary-foreground/80">
+                        <div className="bg-primary-foreground/5 p-4 rounded-xl space-y-2 hover:bg-primary-foreground/10 transition-colors print:border print:border-gray-200 print:bg-white">
+                          <div className="flex items-center justify-between text-sm font-bold text-primary-foreground/80 print:text-black">
                             <span>Days Onboard</span>
-                            <span className="font-mono font-bold tabular-nums transition-all">{formatCurrency(contract.tripWorkingTotal)}</span>
+                            <span className="font-mono font-bold tabular-nums transition-all">{formatCurrencyIn(contract.tripWorkingTotal, cCurrency)}</span>
                           </div>
                           <div className="flex items-center justify-between">
-                            <span className="text-xs text-primary-foreground/50 font-medium">{contract.nWorkingDays} days × {formatCurrency(contract.cTotalCharge)}</span>
+                            <span className="text-xs text-primary-foreground/50 print:text-gray-500 font-medium">{contract.nWorkingDays} days × {formatCurrencyIn(contract.cTotalCharge, cCurrency)}</span>
                           </div>
                         </div>
 
-                        {/* Travel Days Total */}
-                        <div className="bg-primary-foreground/5 p-4 rounded-xl space-y-2 hover:bg-primary-foreground/10 transition-colors">
-                          <div className="flex items-center justify-between text-sm font-bold text-primary-foreground/80">
+                        <div className="bg-primary-foreground/5 p-4 rounded-xl space-y-2 hover:bg-primary-foreground/10 transition-colors print:border print:border-gray-200 print:bg-white">
+                          <div className="flex items-center justify-between text-sm font-bold text-primary-foreground/80 print:text-black">
                             <span>Travel Days ({contract.nTravelDays} occurrences)</span>
-                            <span className="font-mono font-bold tabular-nums transition-all">{formatCurrency(contract.tripTravelTotal)}</span>
+                            <span className="font-mono font-bold tabular-nums transition-all">{formatCurrencyIn(contract.tripTravelTotal, cCurrency)}</span>
                           </div>
-                          <div className="flex flex-col text-xs text-primary-foreground/50 font-medium">
+                          <div className="flex flex-col text-xs text-primary-foreground/50 print:text-gray-500 font-medium">
                             <span>{contract.travelPayableDays} days pay + {contract.travelSubDays} full days sub</span>
                           </div>
                         </div>
 
-                        {/* Logistics Total */}
                         {contract.logisticsTotal > 0 && (
-                          <div className="bg-primary-foreground/5 p-4 rounded-xl flex flex-col gap-2 hover:bg-primary-foreground/10 transition-colors animate-in slide-in-from-top-2 fade-in">
-                            <div className="flex items-center justify-between text-sm font-bold text-primary-foreground/80">
+                          <div className="bg-primary-foreground/5 p-4 rounded-xl flex flex-col gap-2 hover:bg-primary-foreground/10 transition-colors animate-in slide-in-from-top-2 fade-in print:border print:border-gray-200 print:bg-white">
+                            <div className="flex items-center justify-between text-sm font-bold text-primary-foreground/80 print:text-black">
                               <span>Travel & Logistics Costs</span>
-                              <span className="font-mono font-bold tabular-nums transition-all">{formatCurrency(contract.logisticsTotal)}</span>
+                              <span className="font-mono font-bold tabular-nums transition-all">{formatCurrencyIn(contract.logisticsTotal, cCurrency)}</span>
                             </div>
-                            <span className="text-xs text-primary-foreground/50 font-medium leading-relaxed">
-                              Travel: £{mobTravel || '0'} | VISA / Cert.: £{mobVisas || '0'} | Agent: £{mobAgent || '0'} <br />
-                              {logisticsInFee && contract.logisticsFee > 0 && `${contract.travelFeeType === 'percentage' ? contract.cTravelFeeVal + '%' : 'Fixed'} Travel Fee: ${formatCurrency(contract.logisticsFee)}`}
+                            <span className="text-xs text-primary-foreground/50 print:text-gray-500 font-medium leading-relaxed">
+                              Travel: {curSym(cCurrency)}{dbMobTravel || '0'} | VISA / Cert.: {curSym(cCurrency)}{dbMobVisas || '0'} | Agent: {curSym(cCurrency)}{dbMobAgent || '0'} <br />
+                              {logisticsInFee && contract.logisticsFee > 0 && `${contract.travelFeeType === 'percentage' ? contract.cTravelFeeVal + '%' : 'Fixed'} Travel Fee: ${formatCurrencyIn(contract.logisticsFee, cCurrency)}`}
                             </span>
                           </div>
                         )}
 
-                        {/* Grand Total */}
-                        <div className="pt-2 border-t-2 border-primary-foreground/30 flex items-center justify-between">
-                          <div>
-                            <span className="text-lg font-bold block">Total Hitch Invoice</span>
-                            <span className="text-xs text-primary-foreground/50 font-medium">{contract.nWorkingDays + contract.nTravelDays} days total</span>
+                        <div className="pt-2 border-t-2 border-primary-foreground/30 print:border-gray-300 flex flex-col gap-2">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <span className="text-lg font-bold block">Total Hitch Invoice</span>
+                              <span className="text-xs text-primary-foreground/50 print:text-gray-500 font-medium">{contract.nWorkingDays + contract.nTravelDays} days total</span>
+                            </div>
+                            <span className="text-3xl font-mono font-bold tracking-tight text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={contract.tripGrandTotal}>{formatCurrencyIn(contract.tripGrandTotal, cCurrency)}</span>
                           </div>
-                          <span className="text-3xl font-mono font-bold tracking-tight text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={contract.tripGrandTotal}>{formatCurrency(contract.tripGrandTotal)}</span>
+                          <div aria-live="polite" className="sr-only">
+                            Total Hitch Invoice is {formatCurrencyIn(contract.tripGrandTotal, cCurrency)}
+                          </div>
+
+                          {cCurrency !== 'GBP' && cFx.rate !== null && (
+                            <div className="flex items-center justify-between pt-2 mt-2 text-sm text-primary-foreground/60 print:text-gray-500 border-t border-primary-foreground/10 print:border-gray-200">
+                               <span>Converted Equivalency (@ 1 {cCurrency} = {cFx.rate.toFixed(4)} GBP)</span>
+                               <span className="font-mono font-bold tabular-nums text-white print:text-black">{formatCurrencyIn(contract.tripGrandTotal * cFx.rate, 'GBP')}</span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
                   ) : (
-                    <div className="animate-in fade-in duration-300">
+                    <div className="animate-in fade-in duration-300 print:hidden">
                       <h3 className="text-xs font-bold uppercase tracking-widest text-primary-foreground/60 mb-6">Standard Revenue Projections</h3>
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                        <ProjectionCard label="Weekly" days={5} charge={contract.cTotalCharge} fee={contract.cManagementFee} />
-                        <ProjectionCard label="Monthly" days={21} charge={contract.cTotalCharge} fee={contract.cManagementFee} />
-                        <ProjectionCard label="Annual" days={230} charge={contract.cTotalCharge} fee={contract.cManagementFee} />
+                        <ProjectionCard label="Weekly" days={5} charge={contract.cTotalCharge} fee={contract.cManagementFee} currency={cCurrency} />
+                        <ProjectionCard label="Monthly" days={21} charge={contract.cTotalCharge} fee={contract.cManagementFee} currency={cCurrency} />
+                        <ProjectionCard label="Annual" days={230} charge={contract.cTotalCharge} fee={contract.cManagementFee} currency={cCurrency} />
                       </div>
                     </div>
                   )}
@@ -1024,8 +1319,8 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                     </div>
 
                     <div className="space-y-2">
-                      <label className="block text-sm font-bold text-foreground">Candidate Annual Salary ({pCurrency})</label>
-                      <NumInput value={salary} onChange={setSalary} prefix={pCurrency} aria-label="Annual Salary" />
+                      <label htmlFor="perm-salary" className="block text-sm font-bold text-foreground">Candidate Annual Salary ({pCurrency})</label>
+                      <NumInput id="perm-salary" value={salary} onChange={setSalary} prefix={curSym(pCurrency)} aria-label="Annual Salary" />
                     </div>
 
                     <AnimatedSection show={pCurrency !== 'GBP'}>
@@ -1034,8 +1329,9 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                           <Globe className="h-4 w-4" />Exchange Rate
                         </div>
                         <div className="space-y-1">
-                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Placement / Start Date</label>
+                          <label htmlFor="p-fx-date" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Placement / Start Date</label>
                           <input
+                            id="p-fx-date"
                             type="date"
                             value={pFxDate}
                             onChange={e => setPFxDate(e.target.value)}
@@ -1044,21 +1340,21 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                         </div>
                         <div className="flex items-center justify-between rounded-lg bg-card/60 px-3 py-2.5">
                           <div className="text-sm font-medium">
-                            {pFxLoading ? (
+                            {pFx.loading ? (
                               <span className="text-muted-foreground">Fetching rate…</span>
-                            ) : pFxRate !== null ? (
+                            ) : pFx.rate !== null ? (
                               <span className="font-mono font-bold animate-in fade-in duration-300">
-                                1 {pCurrency} = {pFxRate.toFixed(4)} GBP
+                                1 {pCurrency} = {pFx.rate.toFixed(4)} GBP
                               </span>
                             ) : (
                               <span className="text-muted-foreground">No rate yet</span>
                             )}
                           </div>
-                          <button onClick={() => setPFxRefreshKey(k => k + 1)} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-input/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-                            <RefreshCw className={cn('h-3.5 w-3.5', pFxLoading && 'animate-spin')} />
+                          <button onClick={pFx.refresh} aria-label="Refresh exchange rate" className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-input/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                            <RefreshCw className={cn('h-3.5 w-3.5', pFx.loading && 'animate-spin')} />
                           </button>
                         </div>
-                        {pFxError === 'future-date-fallback' && (
+                        {pFx.error === 'future-date-fallback' && (
                           <div className="flex items-start gap-2 text-xs text-amber-500/90 font-medium">
                             <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                             <span>Future date selected. Showing today's latest rate instead.</span>
@@ -1068,13 +1364,13 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                     </AnimatedSection>
 
                     <div className="space-y-2">
-                      <label className="block text-sm font-bold text-foreground">Placement Fee (%)</label>
-                      <NumInput value={placementFee} onChange={setPlacementFee} suffix="%" placeholder="0.0" />
+                      <label htmlFor="placement-fee" className="block text-sm font-bold text-foreground">Placement Fee (%)</label>
+                      <NumInput id="placement-fee" value={placementFee} onChange={setPlacementFee} suffix="%" placeholder="0.0" />
                     </div>
                     <div className="pt-4 flex justify-between border-t border-border/60 group">
                       <div className="space-y-1 pr-4">
                         <label className="text-sm font-bold text-foreground cursor-pointer group-hover:text-primary transition-colors" onClick={() => setIncludePermNI(!includePermNI)}>Include Employer's NI</label>
-                        <p className="text-xs text-muted-foreground font-medium">Informational only. (15% over £9,100)</p>
+                        <p className="text-xs text-muted-foreground font-medium">Informational only. ({FISCAL_RATES.permNI * 100}% over £{FISCAL_RATES.permNIThreshold})</p>
                       </div>
                       <Switch checked={includePermNI} onCheckedChange={setIncludePermNI} />
                     </div>
@@ -1083,9 +1379,9 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                 <AssumptionsAccordion />
               </div>
 
-              <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative">
+              <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:col-span-12 print:shadow-none print:w-full print:bg-white print:text-black print:border-2">
                 {perm.pSalaryInput === 0 && !salary ? (
-                  <div className="absolute inset-0 z-10 bg-primary/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500">
+                  <div className="absolute inset-0 z-10 bg-primary/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
                     <div className="p-4 bg-primary-foreground/10 rounded-full mb-4">
                       <Briefcase className="h-8 w-8 text-primary-foreground/60" />
                     </div>
@@ -1097,18 +1393,24 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                 ) : null}
 
                 <div className="p-8 md:p-10 flex-grow relative z-0">
+                  <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4 print:mb-6">
+                    <input type="text" placeholder="Client Name (Optional)" aria-label="Client Name" value={clientName} onChange={e=>setClientName(e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
+                    <input type="text" placeholder="Candidate Name (Optional)" aria-label="Candidate Name" value={candidateName} onChange={e=>setCandidateName(e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
+                  </div>
+
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
                     <h2 className="text-xl font-bold">Invoice Breakdown</h2>
                     <div className="flex items-center gap-3">
                       <ActionButton onClick={copyPermSummary} icon={Copy} label="Copy" />
-                      <span className="text-xs uppercase tracking-widest font-bold px-3 py-1.5 bg-primary-foreground/10 rounded-full">Permanent</span>
+                      <ActionButton onClick={printSchedule} icon={Printer} label="Print" />
+                      <span className="text-xs uppercase tracking-widest font-bold px-3 py-1.5 bg-primary-foreground/10 rounded-full print:bg-gray-200">Permanent</span>
                     </div>
                   </div>
                   <div className="space-y-5">
                     <LineItem label={`Annual Salary (${pCurrency})`} value={perm.pSalaryInput} currency={pCurrency} />
                     {pCurrency !== 'GBP' && (
                       <LineItem
-                        label={pFxRate !== null ? `Converted @ 1 ${pCurrency} = ${pFxRate.toFixed(4)} GBP` : 'Converted (awaiting rate…)'}
+                        label={pFx.rate !== null ? `Converted @ 1 ${pCurrency} = ${pFx.rate.toFixed(4)} GBP` : 'Converted (awaiting rate…)'}
                         value={perm.pSalary}
                       />
                     )}
@@ -1120,20 +1422,23 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                     ) : (
                       <>
                         <LineItem label={`Placement Fee (${perm.pFeePct.toFixed(1)}%)`} value={perm.pPlacementFee} isBold />
-                        <div className="text-xs text-primary-foreground/60 font-medium bg-primary-foreground/5 p-2.5 rounded-lg flex items-center gap-2">
+                        <div className="text-xs text-primary-foreground/60 print:text-gray-500 font-medium bg-primary-foreground/5 print:bg-gray-50 print:border print:border-gray-200 p-2.5 rounded-lg flex items-center gap-2">
                           <Info className="h-3.5 w-3.5 shrink-0" />
-                          <span>Fee = {perm.pFeePct}% × {formatCurrency(perm.pSalary)}</span>
+                          <span>Fee = {perm.pFeePct}% × {formatCurrencyIn(perm.pSalary, 'GBP')}</span>
                         </div>
                       </>
                     )}
-                    {includePermNI && perm.pFxReady && (<><div className="h-px bg-primary-foreground/20 my-4" /><LineItem label="Employer's NI on Salary" value={perm.pEmployerNI} /></>)}
+                    {includePermNI && perm.pFxReady && (<><div className="h-px bg-primary-foreground/20 my-4 print:bg-gray-300" /><LineItem label="Employer's NI on Salary" value={perm.pEmployerNI} /></>)}
 
-                    <div className="mt-4 pt-5 border-t-2 border-primary-foreground/30">
+                    <div className="mt-4 pt-5 border-t-2 border-primary-foreground/30 print:border-gray-300">
                       <div className="flex items-center justify-between">
                         <span className="text-lg font-bold">Total Invoice to Client</span>
-                        <span className="text-3xl font-mono font-bold tracking-tight text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={perm.pPlacementFee}>{formatCurrency(perm.pPlacementFee)}</span>
+                        <span className="text-3xl font-mono font-bold tracking-tight text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={perm.pPlacementFee}>{formatCurrencyIn(perm.pPlacementFee, 'GBP')}</span>
                       </div>
-                      <p className="text-xs text-primary-foreground/50 font-medium mt-1">Invoiced in GBP regardless of salary currency.</p>
+                      <div aria-live="polite" className="sr-only">
+                        Placement Fee Invoice is {formatCurrencyIn(perm.pPlacementFee, 'GBP')}
+                      </div>
+                      <p className="text-xs text-primary-foreground/50 print:text-gray-500 font-medium mt-1">Invoiced in GBP regardless of salary currency.</p>
                     </div>
                   </div>
                 </div>
@@ -1159,20 +1464,20 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                   </div>
 
                   <div className="space-y-3">
-                    <label className="block text-sm font-bold">Start Date</label>
-                    <input type="date" value={pdStartDate} onChange={e => setPdStartDate(e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
+                    <label htmlFor="pd-start" className="block text-sm font-bold">Start Date</label>
+                    <input id="pd-start" type="date" value={pdStartDate} onChange={e => setPdStartDate(e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
                     <SegmentedControl value={pdStartMode} onChange={setPdStartMode} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full', value: 'full'}, {label: 'Custom', value: 'custom'}]} ariaLabel="Start Mode" />
                     <AnimatedSection show={pdStartMode === 'custom'} className="pt-2">
-                       <NumInput value={pdStartCustomVal} onChange={setPdStartCustomVal} placeholder="0.5" suffix="days" />
+                       <NumInput id="pd-start-custom" value={pdStartCustomVal} onChange={setPdStartCustomVal} placeholder="0.5" suffix="days" />
                     </AnimatedSection>
                   </div>
 
                   <div className="space-y-3 pt-4 border-t border-border/60">
-                    <label className="block text-sm font-bold">Finish Date</label>
-                    <input type="date" value={pdFinishDate} onChange={e => setPdFinishDate(e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
+                    <label htmlFor="pd-finish" className="block text-sm font-bold">Finish Date</label>
+                    <input id="pd-finish" type="date" value={pdFinishDate} onChange={e => setPdFinishDate(e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
                     <SegmentedControl value={pdFinishMode} onChange={setPdFinishMode} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full', value: 'full'}, {label: 'Custom', value: 'custom'}]} ariaLabel="Finish Mode" />
                     <AnimatedSection show={pdFinishMode === 'custom'} className="pt-2">
-                       <NumInput value={pdFinishCustomVal} onChange={setPdFinishCustomVal} placeholder="0.5" suffix="days" />
+                       <NumInput id="pd-finish-custom" value={pdFinishCustomVal} onChange={setPdFinishCustomVal} placeholder="0.5" suffix="days" />
                     </AnimatedSection>
                   </div>
 
@@ -1182,8 +1487,8 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                       <Switch checked={pdIncludeSubsistence} onCheckedChange={setPdIncludeSubsistence} />
                     </div>
                     <AnimatedSection show={pdIncludeSubsistence} className="pt-2">
-                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide mb-2">Subsistence Rate (£ per day)</label>
-                      <NumInput value={pdSubsistenceRate} onChange={setPdSubsistenceRate} prefix="£" />
+                      <label htmlFor="pd-sub-rate" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide mb-2">Subsistence Rate (£ per day)</label>
+                      <NumInput id="pd-sub-rate" value={pdSubsistenceRate} onChange={setPdSubsistenceRate} prefix="£" />
                     </AnimatedSection>
                   </div>
 
@@ -1195,12 +1500,12 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                     <AnimatedSection show={pdIncludePay} className="pt-2">
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Day Rate (£)</label>
-                          <NumInput value={pdDayRate} onChange={setPdDayRate} prefix="£" />
+                          <label htmlFor="pd-day-rate" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Day Rate (£)</label>
+                          <NumInput id="pd-day-rate" value={pdDayRate} onChange={setPdDayRate} prefix="£" />
                         </div>
                         <div className="space-y-2">
-                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Advance Deduction (£)</label>
-                          <NumInput value={pdAdvance} onChange={setPdAdvance} prefix="£" />
+                          <label htmlFor="pd-advance" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Advance Deduction (£)</label>
+                          <NumInput id="pd-advance" value={pdAdvance} onChange={setPdAdvance} prefix="£" />
                         </div>
                       </div>
                     </AnimatedSection>
@@ -1212,9 +1517,13 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
               <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:col-span-12 print:shadow-none print:w-full print:text-black print:bg-white print:border-2">
                 <div className="p-8 md:p-10 flex-grow relative z-0">
 
-                  {/* Print-only Header */}
                   <div className="hidden print:block text-xs text-gray-500 mb-4 uppercase tracking-widest font-bold">
                     Generated on {new Date().toLocaleDateString('en-GB')}
+                  </div>
+
+                  <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4 print:mb-6">
+                    <input type="text" placeholder="Client Name (Optional)" aria-label="Client Name" value={clientName} onChange={e=>setClientName(e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
+                    <input type="text" placeholder="Candidate Name (Optional)" aria-label="Candidate Name" value={candidateName} onChange={e=>setCandidateName(e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
                   </div>
 
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
@@ -1266,30 +1575,34 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                           <div className="mt-6 pt-5 border-t border-primary-foreground/10 text-left space-y-2 print:border-gray-300">
                             {pdIncludePay && (
                               <div className="flex justify-between items-center text-sm">
-                                <span className="text-primary-foreground/60 font-medium print:text-gray-600">Gross Pay ({paydays.totalDays} × {formatCurrency(pdDayRateVal)})</span>
-                                <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrency(pdTotalGross)}</span>
+                                <span className="text-primary-foreground/60 font-medium print:text-gray-600">Gross Pay ({paydays.totalDays} × {formatCurrencyIn(pdDayRateVal, 'GBP')})</span>
+                                <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrencyIn(pdTotalGross, 'GBP')}</span>
                               </div>
                             )}
                             {pdIncludeSubsistence && pdSubsistenceRate && (
                               <div className="flex justify-between items-center text-sm">
                                 <span className="text-primary-foreground/60 font-medium print:text-gray-600">Subsistence ({paydays.totalSubDays}d)</span>
-                                <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrency(paydays.totalSub || 0)}</span>
+                                <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrencyIn(paydays.totalSub || 0, 'GBP')}</span>
                               </div>
                             )}
                             {pdIncludePay && pdAdvanceVal > 0 && (
                               <div className="flex justify-between items-center text-sm">
                                 <span className="text-red-400 font-medium">Less Advance</span>
-                                <span className="font-mono font-bold text-red-400 tabular-nums">-{formatCurrency(pdAdvanceVal)}</span>
+                                <span className="font-mono font-bold text-red-400 tabular-nums">-{formatCurrencyIn(pdAdvanceVal, 'GBP')}</span>
                               </div>
                             )}
                             {pdIncludePay && (
                               <div className="flex justify-between items-center pt-2 mt-2 border-t border-primary-foreground/10 text-base print:border-gray-300">
                                 <span className="font-bold text-white print:text-black">Total Net Pay</span>
-                                <span className="font-mono font-bold text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={pdTotalNet}>{formatCurrency(pdTotalNet)}</span>
+                                <span className="font-mono font-bold text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={pdTotalNet}>{formatCurrencyIn(pdTotalNet, 'GBP')}</span>
                               </div>
                             )}
                           </div>
                         )}
+                      </div>
+
+                      <div aria-live="polite" className="sr-only">
+                        {pdIncludePay ? `Total Net Pay is ${formatCurrencyIn(pdTotalNet, 'GBP')}` : `Total Payable Days: ${paydays.totalDays}`}
                       </div>
 
                       <div className="space-y-3">
@@ -1297,7 +1610,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                           Payment Schedule
                         </p>
                         {paydays.splits.map((split, idx) => (
-                          <div key={idx} className="bg-primary-foreground/10 rounded-xl overflow-hidden hover:bg-primary-foreground/20 transition-colors print:border print:border-gray-300 print:bg-white print:text-black">
+                          <div key={idx} className="bg-primary-foreground/10 rounded-xl overflow-hidden hover:bg-primary-foreground/20 transition-colors print:border print:border-gray-300 print:bg-white print:text-black print:break-inside-avoid">
                             <div className="flex items-center justify-between px-4 py-3 border-b border-primary-foreground/10 print:border-gray-200">
                               <div className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-2">
                                 {pdPayrollType === 'fortnightly' ? (
@@ -1332,7 +1645,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                                 {pdIncludePay && (
                                   <div className="flex justify-between items-center text-xs">
                                     <span className="text-primary-foreground/60 print:text-gray-600">Period Gross Pay</span>
-                                    <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrency(split.days * pdDayRateVal)}</span>
+                                    <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrencyIn(split.days * pdDayRateVal, 'GBP')}</span>
                                   </div>
                                 )}
                                 {pdIncludeSubsistence && pdSubsistenceRate && (
@@ -1346,6 +1659,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                                           onChange={e => setSubDaysOverrides(prev => ({...prev, [idx]: e.target.value}))}
                                           placeholder={split.days.toString()}
                                           title="Override subsistence days"
+                                          aria-label="Override subsistence days"
                                           className="w-12 bg-background/30 border border-primary-foreground/20 rounded px-1 py-0.5 text-white print:text-black print:border-gray-300 text-center focus:outline-none focus:border-primary-foreground/50 transition-colors font-mono tabular-nums placeholder:text-primary-foreground/40 print:placeholder:text-gray-400"
                                         />
                                         {subDaysOverrides[idx] !== undefined && (
@@ -1353,13 +1667,14 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
                                             onClick={() => setSubDaysOverrides(prev => { const newObj = {...prev}; delete newObj[idx]; return newObj; })}
                                             className="text-primary-foreground/40 hover:text-red-400 print:hidden transition-colors"
                                             title="Reset to default days"
+                                            aria-label="Reset default days"
                                           >
                                             <RotateCcw className="h-3 w-3" />
                                           </button>
                                         )}
                                       </div>
                                     </div>
-                                    <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrency(split.subDays * (parseFloat(pdSubsistenceRate) || 0))}</span>
+                                    <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrencyIn(split.subDays * (parseFloat(pdSubsistenceRate) || 0), 'GBP')}</span>
                                   </div>
                                 )}
                               </div>
@@ -1376,16 +1691,15 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
         </Tabs>
       </div>
 
-      {/* Feature 7: Sticky Mobile Summary */}
-      <div className="fixed bottom-0 left-0 right-0 bg-primary border-t border-primary-foreground/10 text-primary-foreground p-4 md:hidden z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] animate-in slide-in-from-bottom-full duration-500 print:hidden">
+      <div aria-live="polite" className="fixed bottom-0 left-0 right-0 bg-primary border-t border-primary-foreground/10 text-primary-foreground p-4 md:hidden z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] animate-in slide-in-from-bottom-full duration-500 print:hidden">
         <div className="flex items-center justify-between max-w-5xl mx-auto">
           <div className="text-xs font-bold uppercase tracking-widest text-primary-foreground/70">
             {mode === 'contract' ? (includeTrip ? 'Total Hitch' : 'Charge Rate') : mode === 'perm' ? 'Placement Fee' : (mode === 'paydays' && pdIncludePay ? 'Total Net Pay' : 'Total Days')}
           </div>
           <div className="text-xl font-mono font-bold text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={mode}>
-            {mode === 'contract' ? (includeTrip ? formatCurrency(contract.tripGrandTotal) : formatCurrency(contract.cTotalCharge)) 
-              : mode === 'perm' ? formatCurrency(perm.pPlacementFee) 
-              : (mode === 'paydays' && pdIncludePay ? formatCurrency(pdTotalNet) : (paydays.totalDays ?? 0))}
+            {mode === 'contract' ? (includeTrip ? formatCurrencyIn(contract.tripGrandTotal, cCurrency) : formatCurrencyIn(contract.cTotalCharge, cCurrency)) 
+              : mode === 'perm' ? formatCurrencyIn(perm.pPlacementFee, 'GBP') 
+              : (mode === 'paydays' && pdIncludePay ? formatCurrencyIn(pdTotalNet, 'GBP') : (paydays.totalDays ?? 0))}
           </div>
         </div>
       </div>
@@ -1395,7 +1709,7 @@ Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrency(includePermNI ? pe
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function LineItem({ label, value, isBold = false, currency = 'GBP' }: any) {
+const LineItem = React.memo(function LineItem({ label, value, isBold = false, currency = 'GBP' }: any) {
   return (
     <div className={cn('flex items-center justify-between py-1 group', isBold ? 'text-white font-bold' : 'text-primary-foreground/80 hover:text-white transition-colors')}>
       <span className="text-sm font-medium">{label}</span>
@@ -1404,28 +1718,28 @@ function LineItem({ label, value, isBold = false, currency = 'GBP' }: any) {
       </span>
     </div>
   );
-}
+});
 
-function ProjectionCard({ label, days, charge, fee }: { label: string; days: number; charge: number; fee: number }) {
+const ProjectionCard = React.memo(function ProjectionCard({ label, days, charge, fee, currency = 'GBP' }: { label: string; days: number; charge: number; fee: number; currency?: string }) {
   return (
-    <div className="bg-primary-foreground/5 p-5 rounded-xl hover:bg-primary-foreground/10 transition-colors">
-      <div className="text-sm font-bold text-white mb-4 flex items-center justify-between border-b border-primary-foreground/10 pb-2">
+    <div className="bg-primary-foreground/5 p-5 rounded-xl hover:bg-primary-foreground/10 transition-colors print:border print:border-gray-200 print:bg-white">
+      <div className="text-sm font-bold text-white mb-4 flex items-center justify-between border-b border-primary-foreground/10 pb-2 print:text-black">
         {label}
-        <span className="text-xs font-medium text-primary-foreground/60 bg-primary-foreground/10 px-2 py-0.5 rounded-md">{days} Days</span>
+        <span className="text-xs font-medium text-primary-foreground/60 bg-primary-foreground/10 px-2 py-0.5 rounded-md print:bg-gray-100 print:text-gray-600">{days} Days</span>
       </div>
       <div className="space-y-2.5">
         <div className="flex justify-between text-sm">
-          <span className="text-primary-foreground/70 font-medium">Charge</span>
-          <span className="font-mono font-bold text-chart-1 tabular-nums transition-all">{formatCurrency(charge * days)}</span>
+          <span className="text-primary-foreground/70 font-medium print:text-gray-600">Charge</span>
+          <span className="font-mono font-bold text-chart-1 tabular-nums transition-all">{formatCurrencyIn(charge * days, currency)}</span>
         </div>
-        <div className="flex justify-between text-sm pt-2 border-t border-primary-foreground/10">
-          <span className="text-primary-foreground/70 font-medium">Fee Margin</span>
-          <span className="font-mono font-bold text-white tabular-nums transition-all">{formatCurrency(fee * days)}</span>
+        <div className="flex justify-between text-sm pt-2 border-t border-primary-foreground/10 print:border-gray-200">
+          <span className="text-primary-foreground/70 font-medium print:text-gray-600">Fee Margin</span>
+          <span className="font-mono font-bold text-white print:text-black tabular-nums transition-all">{formatCurrencyIn(fee * days, currency)}</span>
         </div>
       </div>
     </div>
   );
-}
+});
 
 function AssumptionsAccordion({ maritime = false }: { maritime?: boolean }) {
   return (
@@ -1439,7 +1753,7 @@ function AssumptionsAccordion({ maritime = false }: { maritime?: boolean }) {
           <>
             <div className="space-y-1">
               <strong className="text-foreground block">Seafarer NI Exemption</strong>
-              <p>Standard NI is calculated at 15.5%. When "Seafarer Exemption" is toggled, Employer NI evaluates to 0, assuming the vessel operates fully outside the UK Continental Shelf (UKCS) or is a non-UK flagged vessel avoiding UK NIC obligations.</p>
+              <p>Standard NI is calculated at {FISCAL_RATES.employerNI * 100}%. When "Seafarer Exemption" is toggled, Employer NI evaluates to 0, assuming the vessel operates fully outside the UK Continental Shelf (UKCS) or is a non-UK flagged vessel avoiding UK NIC obligations.</p>
             </div>
             <div className="space-y-1">
               <strong className="text-foreground block">Subsistence Rules (Travel vs Victualling)</strong>
@@ -1449,7 +1763,7 @@ function AssumptionsAccordion({ maritime = false }: { maritime?: boolean }) {
         ) : (
           <div className="space-y-1">
             <strong className="text-foreground block">Employer NI Calculation</strong>
-            <p>Perm NI informational calculation assumes 15% over the £9,100 secondary threshold.</p>
+            <p>Perm NI informational calculation assumes {FISCAL_RATES.permNI * 100}% over the £{FISCAL_RATES.permNIThreshold} secondary threshold.</p>
           </div>
         )}
         <div className="space-y-1">
