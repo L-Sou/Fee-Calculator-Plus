@@ -32,13 +32,11 @@ type CurrencyCode = typeof CURRENCIES[number];
 
 const curSym = (c: CurrencyCode) => ({ GBP: '£', EUR: '€', USD: '$', CHF: 'CHF', AUD: 'A$', CAD: 'C$' }[c] || '£');
 
-const FISCAL_RATES = {
-  pension: 0.04,
-  apprenticeshipLevy: 0.005,
-  employerNI: 0.155,
-  permNI: 0.15,
-  permNIThreshold: 9100,
+const FISCAL_PROFILES = {
+  '2024/2025': { pension: 0.04, apprenticeshipLevy: 0.005, employerNI: 0.138, permNI: 0.138, permNIThreshold: 9100 },
+  '2025/2026': { pension: 0.04, apprenticeshipLevy: 0.005, employerNI: 0.155, permNI: 0.15, permNIThreshold: 9100 },
 };
+type TaxProfile = keyof typeof FISCAL_PROFILES;
 
 const FALLBACK_BANK_HOLIDAYS = new Set([
   '2024-01-01','2024-03-29','2024-04-01','2024-05-06','2024-05-27','2024-08-26','2024-12-25','2024-12-26',
@@ -58,29 +56,209 @@ const sundayBefore = (date: Date) => addDays(date, -(date.getDay() === 0 ? 7 : d
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const FN_ANCHOR = new Date(2026, 0, 9, 12, 0, 0, 0);
 
+// Modernized Clipboard API
 async function copyText(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text);
       return true;
     }
-  } catch { /* fall through */ }
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    return true;
   } catch {
     return false;
   }
+  return false;
 }
 
-// ─── 2. Custom Hooks ──────────────────────────────────────────────────────────
+// ─── 2. Pure Mathematical Calculation Engines ──────────────────────────────────
+
+function calculateContract(params: any, fiscalRates: any) {
+  const cRate = parseFloat(params.dbConsolidatedRate) || 0;
+  const cMarginVal = parseFloat(params.dbMargin) || 0;
+  const cTravelFeeVal = parseFloat(params.dbTravelFee) || 0;
+  const cContingencyInputVal = parseFloat(params.dbContingencyValue) || 0;
+
+  const cPension = params.includePension ? cRate * fiscalRates.pension : 0;
+  const cAppyLevy = params.includeAppyLevy ? cRate * fiscalRates.apprenticeshipLevy : 0;
+  const cContingency = params.includeContingency 
+    ? (params.contingencyType === 'percentage' ? cRate * (cContingencyInputVal / 100) : cContingencyInputVal) 
+    : 0;
+
+  const cTotalAdditions = cPension + cAppyLevy + cContingency;
+  const cSubTravelAmt = params.includeSubsistence ? (parseFloat(params.dbSubTravel) || 0) : 0;
+  const cSubOnboardAmt = params.includeSubsistence ? (parseFloat(params.dbSubOnboard) || 0) : 0;
+
+  const cNiMultiplier = (params.includeNI && !params.seafarerExempt) ? fiscalRates.employerNI : 0;
+  const niBaseAmount = params.niMode === 'total' ? (cRate + cTotalAdditions) : cRate;
+  const cEmployerNI = niBaseAmount * cNiMultiplier;
+
+  const cFeeBase = cRate + cTotalAdditions + cEmployerNI + (params.subsistenceInFee ? cSubOnboardAmt : 0);
+  const cManagementFee = params.feeType === 'percentage' ? cFeeBase * (cMarginVal / 100) : cMarginVal;
+
+  const cTotalCharge = cRate + cTotalAdditions + cEmployerNI + cSubOnboardAmt + cManagementFee;
+
+  const nWorkingDays = Math.max(0, parseFloat(params.dbWorkingDays) || 0);
+  const nTravelDays = Math.max(0, parseFloat(params.dbTravelDays) || 0);
+
+  const travelRateMultiplier = params.travelDayFull ? 1 : 0.5;
+  const travelPayableDays = nTravelDays * travelRateMultiplier; 
+  const travelSubDays = Math.ceil(nTravelDays); 
+
+  const cTravelRate = cRate * travelRateMultiplier;
+  const cTravelPension = params.includePension ? cTravelRate * fiscalRates.pension : 0;
+  const cTravelAppyLevy = params.includeAppyLevy ? cTravelRate * fiscalRates.apprenticeshipLevy : 0;
+  const cTravelContingency = params.includeContingency 
+    ? (params.contingencyType === 'percentage' ? cTravelRate * (cContingencyInputVal / 100) : cContingencyInputVal * travelRateMultiplier) 
+    : 0;
+
+  const cTravelTotalAdditions = cTravelPension + cTravelAppyLevy + cTravelContingency;
+  const travelNIBaseAmount = params.niMode === 'total' ? (cTravelRate + cTravelTotalAdditions) : cTravelRate;
+  const cTravelNI = travelNIBaseAmount * cNiMultiplier;
+
+  const cTravelFeeBaseRef = cTravelRate + cTravelTotalAdditions + cTravelNI + (params.subsistenceInFee ? cSubTravelAmt : 0);
+  const cTravelManagementFee = params.feeType === 'percentage' ? cTravelFeeBaseRef * (cMarginVal / 100) : cMarginVal;
+  const cTravelDayCharge = cTravelRate + cTravelTotalAdditions + cTravelNI + cSubTravelAmt + cTravelManagementFee;
+
+  const totalTravelPay = travelPayableDays * cRate;
+  const totalTravelAdditions = travelPayableDays * cTotalAdditions;
+  const totalTravelNIBase = params.niMode === 'total' ? (totalTravelPay + totalTravelAdditions) : totalTravelPay;
+  const totalTravelNI = totalTravelNIBase * cNiMultiplier;
+  const totalTravelSub = travelSubDays * cSubTravelAmt;
+
+  const totalTravelFeeBase = totalTravelPay + totalTravelAdditions + totalTravelNI + (params.subsistenceInFee ? totalTravelSub : 0);
+  const totalTravelManagementFee = params.feeType === 'percentage' 
+    ? totalTravelFeeBase * (cMarginVal / 100) 
+    : cMarginVal * travelSubDays;
+
+  const tripTravelTotal = totalTravelPay + totalTravelAdditions + totalTravelNI + totalTravelSub + totalTravelManagementFee;
+
+  const fTravel = parseFloat(params.dbMobTravel) || 0;
+  const fVisas = parseFloat(params.dbMobVisas) || 0;
+  const fAgent = parseFloat(params.dbMobAgent) || 0;
+  const logisticsBase = fTravel + fVisas + fAgent;
+
+  const logisticsFee = params.logisticsInFee 
+    ? (params.travelFeeType === 'percentage' ? logisticsBase * (cTravelFeeVal / 100) : cTravelFeeVal) 
+    : 0;
+  const logisticsTotal = logisticsBase + logisticsFee;
+
+  const tripWorkingTotal = nWorkingDays * cTotalCharge;
+  const tripGrandTotal = tripWorkingTotal + tripTravelTotal + logisticsTotal;
+
+  return {
+    cRate, cMarginVal, feeType: params.feeType, cEmployerNI, cTotalCharge, cManagementFee,
+    cPension, cAppyLevy, cContingency, cTotalAdditions,
+    cSubTravelAmt, cSubOnboardAmt,
+    cTravelRate, cTravelNI, cTravelFeeVal, travelFeeType: params.travelFeeType, cTravelManagementFee, cTravelDayCharge,
+    cTravelContingency, // <-- Added this line here
+    nWorkingDays, nTravelDays, travelPayableDays, travelSubDays,
+    logisticsBase, logisticsFee, logisticsTotal,
+    tripWorkingTotal, tripTravelTotal, tripGrandTotal,
+    totalBarVal: Math.max(cTotalCharge, 1)
+  };
+}
+
+function calculatePerm(params: any, fiscalRates: any, fxRate: number | null) {
+  const pSalaryInput = parseFloat(params.dbSalary) || 0;
+  const pFxReady = params.pCurrency === 'GBP' || fxRate !== null;
+  const pSalary = params.pCurrency === 'GBP' ? pSalaryInput : (fxRate !== null ? pSalaryInput * fxRate : 0);
+  const pFeePct = parseFloat(params.dbPlacementFee) || 0;
+
+  // Feature: Invoice in Origin Currency
+  const pPlacementFee = params.invoiceInOrigin 
+    ? pSalaryInput * (pFeePct / 100) 
+    : (pFxReady ? pSalary * (pFeePct / 100) : 0);
+
+  // NI is always a UK tax on the GBP equivalent salary
+  const pEmployerNI = params.includePermNI ? Math.max(0, (pSalary - fiscalRates.permNIThreshold) * fiscalRates.permNI) : 0;
+
+  return { pSalaryInput, pFxReady, pSalary, pFeePct, pPlacementFee, pEmployerNI, pTotalCost: pPlacementFee + (params.invoiceInOrigin ? 0 : pEmployerNI) };
+}
+
+function calculateRawPaydays(params: any, bankHolidays: Set<string>) {
+  if (!params.pdStartDate || !params.pdFinishDate) return { splits: [], error: null };
+  const start = parseDate(params.pdStartDate);
+  const finish = parseDate(params.pdFinishDate);
+  if (finish < start) return { splits: [], error: 'Finish date must be on or after start date.' };
+
+  const startVal = params.pdStartMode === 'full' ? 1 : params.pdStartMode === 'half' ? 0.5 : parseFloat(params.pdStartCustomVal) || 0;
+  const finishVal = params.pdFinishMode === 'full' ? 1 : params.pdFinishMode === 'half' ? 0.5 : parseFloat(params.pdFinishCustomVal) || 0;
+
+  const isWorkingDay = (d: Date) => !isWeekend(d) && !bankHolidays.has(isoDate(d));
+  const monthlyPayday = (y: number, m: number) => {
+    let d = new Date(y, m, 28, 12, 0, 0, 0);
+    while (!isWorkingDay(d)) d = addDays(d, -1);
+    return d;
+  };
+
+  try {
+    const cutoffs: Array<{ payday: Date; cutoff: Date }> = [];
+    if (params.pdPayrollType === 'fortnightly') {
+      let idx = Math.floor(Math.round((start.getTime() - FN_ANCHOR.getTime()) / 86400000) / 14);
+      while (sundayBefore(addDays(FN_ANCHOR, (idx - 1) * 14)).getTime() >= start.getTime()) idx--;
+      while (sundayBefore(addDays(FN_ANCHOR, idx * 14)).getTime() < start.getTime()) idx++;
+      for (;;) {
+        const payday = addDays(FN_ANCHOR, idx * 14);
+        const cutoff = sundayBefore(payday);
+        cutoffs.push({ payday, cutoff });
+        if (cutoff.getTime() >= finish.getTime()) break;
+        idx++;
+      }
+    } else {
+      let year = start.getFullYear(), month = start.getMonth();
+      for (let i = 0; i < 25; i++) {
+        const cutoff = new Date(year, month, 20, 12, 0, 0, 0);
+        if (cutoff.getTime() >= start.getTime()) {
+          cutoffs.push({ payday: monthlyPayday(year, month), cutoff });
+          if (cutoff.getTime() >= finish.getTime()) break;
+        }
+        if (++month > 11) { month = 0; year++; }
+      }
+    }
+
+    const splits: any[] = [];
+    let periodStart = start, carryDays = 0, finishReached = false, i = 0;
+
+    while (true) {
+      if (i >= cutoffs.length) {
+        if (params.pdPayrollType === 'monthly' && carryDays > 0) {
+          const last = cutoffs[cutoffs.length - 1];
+          let m = last.payday.getMonth() + 1, y = last.payday.getFullYear();
+          if (m > 11) { m = 0; y++; }
+          cutoffs.push({ payday: monthlyPayday(y, m), cutoff: new Date(y, m, 20, 12, 0, 0, 0) });
+        } else break;
+      }
+
+      const { payday, cutoff } = cutoffs[i];
+      let rawDays = 0, periodEnd = cutoff;
+
+      if (finishReached) { rawDays = 0; }
+      else {
+        const isLast = cutoff.getTime() >= finish.getTime();
+        periodEnd = isLast ? finish : cutoff;
+        const diff = Math.round((periodEnd.getTime() - periodStart.getTime()) / 86400000);
+        rawDays = diff === 0 ? (i === 0 ? startVal : isLast ? finishVal : 1) : ((i === 0 ? startVal : 1) + (diff - 1) + (isLast ? finishVal : 1));
+        if (isLast) finishReached = true;
+      }
+
+      let days = rawDays + carryDays;
+      carryDays = params.pdPayrollType === 'monthly' && days > 31 ? days - 31 : 0;
+      if (carryDays > 0) days = 31;
+
+      const periodLabel = params.pdPayrollType === 'monthly' ? `${MONTH_NAMES[payday.getMonth()]} ${payday.getFullYear()}` : `${formatUK(periodStart)} – ${formatUK(periodEnd)}`;
+      splits.push({ periodStart, periodEnd, cutoff, payday, periodLabel, days });
+
+      if (finishReached && carryDays <= 0) break;
+      periodStart = addDays(cutoff, 1);
+      i++;
+    }
+
+    return { splits, error: null };
+  } catch {
+    return { splits: [], error: 'Calculation failed.' };
+  }
+}
+
+// ─── 3. Custom Hooks ──────────────────────────────────────────────────────────
 
 function useLocalStorage<T>(key: string, initialValue: T) {
   const [storedValue, setStoredValue] = useState<T>(() => {
@@ -214,7 +392,7 @@ function useFxRate(currency: CurrencyCode, baseDate: string) {
   return { rate, loading, error, refresh: () => setRefreshKey(k => k + 1) };
 }
 
-// ─── 3. Reusable Sub-components ───────────────────────────────────────────────
+// ─── 4. Reusable Sub-components ───────────────────────────────────────────────
 
 const NumInput = ({ id, value, onChange, prefix, suffix, placeholder = '0.00', 'aria-label': ariaLabel }: any) => (
   <div className="relative group flex-1">
@@ -232,7 +410,7 @@ const NumInput = ({ id, value, onChange, prefix, suffix, placeholder = '0.00', '
 const SegmentedControl = ({ value, onChange, options, ariaLabel }: { value: string, onChange: (v: any) => void, options: {label: string, value: string}[], ariaLabel: string }) => (
   <div className="flex items-center gap-1 p-1 bg-input/40 border border-input rounded-xl w-full" role="radiogroup" aria-label={ariaLabel}>
     {options.map(opt => (
-      <label key={opt.value} className={cn('flex-1 text-center cursor-pointer px-3 py-1.5 rounded-lg text-sm font-bold transition-all duration-300 focus-within:ring-2 focus-within:ring-primary',
+      <label key={opt.value} className={cn('flex-1 text-center cursor-pointer px-3 py-1.5 rounded-lg text-sm font-bold transition-all duration-300 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary',
         value === opt.value ? 'bg-primary text-primary-foreground shadow scale-100' : 'text-muted-foreground hover:text-foreground scale-95')}
       >
         <input type="radio" className="sr-only" value={opt.value} checked={value === opt.value} onChange={(e) => onChange(e.target.value)} />
@@ -292,14 +470,17 @@ const Tooltip = ({ text }: { text: string }) => (
   </div>
 );
 
-// ─── 4. Main Application Component ────────────────────────────────────────────
+// ─── 5. Main Application Component ────────────────────────────────────────────
 
 export default function CalculatorPage() {
   const { showToast, showUndoToast, ToastContainer } = useToast();
   const bankHolidays = useBankHolidays();
   const [mode, setMode] = useState<'contract' | 'perm' | 'paydays'>('contract');
 
-  // Shared Global Print Headers
+  // Shared Global State
+  const [taxYear, setTaxYear] = useLocalStorage<TaxProfile>('calc_tax_profile', '2025/2026');
+  const activeFiscalRates = FISCAL_PROFILES[taxYear];
+
   const [clientName, setClientName] = useState('');
   const [candidateName, setCandidateName] = useState('');
 
@@ -350,6 +531,7 @@ export default function CalculatorPage() {
   const [placementFee, setPlacementFee] = useLocalStorage('calc_perm_fee', '20');
   const [includePermNI, setIncludePermNI] = useLocalStorage('calc_perm_ni', false);
   const [pCurrency, setPCurrency] = useLocalStorage<CurrencyCode>('calc_currency', 'GBP');
+  const [invoiceInOrigin, setInvoiceInOrigin] = useLocalStorage('calc_perm_inv_origin', false);
   const [pFxDate, setPFxDate] = useState(() => new Date().toISOString().slice(0, 10));
   const pFx = useFxRate(pCurrency, pFxDate);
 
@@ -420,9 +602,10 @@ export default function CalculatorPage() {
     const snapshot = {
       consolidatedRate, margin, cCurrency, feeType, 
       includePension, includeAppyLevy, includeContingency, contingencyType, contingencyValue,
-      includeNI, niMode, seafarerExempt, 
+      includeNI, niMode, seafarerExempt, taxYear,
       includeSubsistence, subsistenceTravel, subsistenceOnboard, subsistenceInFee,
-      includeTrip, workingDays, travelDays, travelDayFull, travelFeeType, travelFee, logisticsInFee
+      includeTrip, workingDays, travelDays, travelDayFull, travelFeeType, travelFee, logisticsInFee,
+      invoiceInOrigin
     };
     setSavedPresets(prev => ({ ...prev, [newPresetName]: snapshot }));
     setNewPresetName('');
@@ -444,6 +627,7 @@ export default function CalculatorPage() {
     if (data.includeNI !== undefined) setIncludeNI(data.includeNI);
     if (data.niMode !== undefined) setNiMode(data.niMode);
     if (data.seafarerExempt !== undefined) setSeafarerExempt(data.seafarerExempt);
+    if (data.taxYear !== undefined) setTaxYear(data.taxYear);
     if (data.includeSubsistence !== undefined) setIncludeSubsistence(data.includeSubsistence);
     if (data.subsistenceTravel !== undefined) setSubsistenceTravel(data.subsistenceTravel);
     if (data.subsistenceOnboard !== undefined) setSubsistenceOnboard(data.subsistenceOnboard);
@@ -455,194 +639,39 @@ export default function CalculatorPage() {
     if (data.travelFeeType !== undefined) setTravelFeeType(data.travelFeeType);
     if (data.travelFee !== undefined) setTravelFee(data.travelFee);
     if (data.logisticsInFee !== undefined) setLogisticsInFee(data.logisticsInFee);
+    if (data.invoiceInOrigin !== undefined) setInvoiceInOrigin(data.invoiceInOrigin);
     showToast(`Preset "${name}" loaded!`);
   };
 
-  // ─── Memoized Calculations ───
+  // ─── Memoized Render Drivers ───
+  // These pass state parameters to the pure utility functions
 
-  const contract = useMemo(() => {
-    const cRate = parseFloat(dbConsolidatedRate) || 0;
-    const cMarginVal = parseFloat(dbMargin) || 0;
-    const cTravelFeeVal = parseFloat(dbTravelFee) || 0;
-    const cContingencyInputVal = parseFloat(dbContingencyValue) || 0;
+  const contract = useMemo(() => calculateContract({
+    dbConsolidatedRate, dbMargin, dbTravelFee, dbContingencyValue, 
+    includePension, includeAppyLevy, includeContingency, contingencyType, 
+    includeSubsistence, dbSubTravel, dbSubOnboard, includeNI, seafarerExempt, 
+    niMode, subsistenceInFee, feeType, dbWorkingDays, dbTravelDays, travelDayFull, 
+    dbMobTravel, dbMobVisas, dbMobAgent, logisticsInFee, travelFeeType
+  }, activeFiscalRates), [
+    dbConsolidatedRate, dbMargin, dbTravelFee, dbContingencyValue, 
+    includePension, includeAppyLevy, includeContingency, contingencyType, 
+    includeSubsistence, dbSubTravel, dbSubOnboard, includeNI, seafarerExempt, 
+    niMode, subsistenceInFee, feeType, dbWorkingDays, dbTravelDays, travelDayFull, 
+    dbMobTravel, dbMobVisas, dbMobAgent, logisticsInFee, travelFeeType, activeFiscalRates
+  ]);
 
-    const cPension = includePension ? cRate * FISCAL_RATES.pension : 0;
-    const cAppyLevy = includeAppyLevy ? cRate * FISCAL_RATES.apprenticeshipLevy : 0;
-    const cContingency = includeContingency 
-      ? (contingencyType === 'percentage' ? cRate * (cContingencyInputVal / 100) : cContingencyInputVal) 
-      : 0;
+  const perm = useMemo(() => calculatePerm({
+    dbSalary, dbPlacementFee, includePermNI, pCurrency, invoiceInOrigin
+  }, activeFiscalRates, pFx.rate), [
+    dbSalary, dbPlacementFee, includePermNI, pCurrency, invoiceInOrigin, activeFiscalRates, pFx.rate
+  ]);
 
-    const cTotalAdditions = cPension + cAppyLevy + cContingency;
-    const cSubTravelAmt = includeSubsistence ? (parseFloat(dbSubTravel) || 0) : 0;
-    const cSubOnboardAmt = includeSubsistence ? (parseFloat(dbSubOnboard) || 0) : 0;
+  const rawPaydays = useMemo(() => calculateRawPaydays({
+    pdStartDate, pdFinishDate, pdPayrollType, pdStartMode, pdStartCustomVal, pdFinishMode, pdFinishCustomVal
+  }, bankHolidays), [
+    pdStartDate, pdFinishDate, pdPayrollType, pdStartMode, pdStartCustomVal, pdFinishMode, pdFinishCustomVal, bankHolidays
+  ]);
 
-    const cNiMultiplier = (includeNI && !seafarerExempt) ? FISCAL_RATES.employerNI : 0;
-    const niBaseAmount = niMode === 'total' ? (cRate + cTotalAdditions) : cRate;
-    const cEmployerNI = niBaseAmount * cNiMultiplier;
-
-    const cFeeBase = cRate + cTotalAdditions + cEmployerNI + (subsistenceInFee ? cSubOnboardAmt : 0);
-    const cManagementFee = feeType === 'percentage' ? cFeeBase * (cMarginVal / 100) : cMarginVal;
-
-    const cTotalCharge = cRate + cTotalAdditions + cEmployerNI + cSubOnboardAmt + cManagementFee;
-
-    const nWorkingDays = Math.max(0, parseFloat(dbWorkingDays) || 0);
-    const nTravelDays = Math.max(0, parseFloat(dbTravelDays) || 0);
-
-    const travelRateMultiplier = travelDayFull ? 1 : 0.5;
-    const travelPayableDays = nTravelDays * travelRateMultiplier; 
-    const travelSubDays = Math.ceil(nTravelDays); 
-
-    const cTravelRate = cRate * travelRateMultiplier;
-    const cTravelPension = includePension ? cTravelRate * FISCAL_RATES.pension : 0;
-    const cTravelAppyLevy = includeAppyLevy ? cTravelRate * FISCAL_RATES.apprenticeshipLevy : 0;
-    const cTravelContingency = includeContingency 
-      ? (contingencyType === 'percentage' ? cTravelRate * (cContingencyInputVal / 100) : cContingencyInputVal * travelRateMultiplier) 
-      : 0;
-
-    const cTravelTotalAdditions = cTravelPension + cTravelAppyLevy + cTravelContingency;
-
-    const travelNIBaseAmount = niMode === 'total' ? (cTravelRate + cTravelTotalAdditions) : cTravelRate;
-    const cTravelNI = travelNIBaseAmount * cNiMultiplier;
-
-    const cTravelFeeBaseRef = cTravelRate + cTravelTotalAdditions + cTravelNI + (subsistenceInFee ? cSubTravelAmt : 0);
-    const cTravelManagementFee = feeType === 'percentage' ? cTravelFeeBaseRef * (cMarginVal / 100) : cMarginVal;
-    const cTravelDayCharge = cTravelRate + cTravelTotalAdditions + cTravelNI + cSubTravelAmt + cTravelManagementFee;
-
-    const totalTravelPay = travelPayableDays * cRate;
-    const totalTravelAdditions = travelPayableDays * cTotalAdditions;
-    const totalTravelNIBase = niMode === 'total' ? (totalTravelPay + totalTravelAdditions) : totalTravelPay;
-    const totalTravelNI = totalTravelNIBase * cNiMultiplier;
-    const totalTravelSub = travelSubDays * cSubTravelAmt;
-
-    const totalTravelFeeBase = totalTravelPay + totalTravelAdditions + totalTravelNI + (subsistenceInFee ? totalTravelSub : 0);
-    const totalTravelManagementFee = feeType === 'percentage' 
-      ? totalTravelFeeBase * (cMarginVal / 100) 
-      : cMarginVal * travelSubDays;
-
-    const tripTravelTotal = totalTravelPay + totalTravelAdditions + totalTravelNI + totalTravelSub + totalTravelManagementFee;
-
-    const fTravel = parseFloat(dbMobTravel) || 0;
-    const fVisas = parseFloat(dbMobVisas) || 0;
-    const fAgent = parseFloat(dbMobAgent) || 0;
-    const logisticsBase = fTravel + fVisas + fAgent;
-
-    const logisticsFee = logisticsInFee 
-      ? (travelFeeType === 'percentage' ? logisticsBase * (cTravelFeeVal / 100) : cTravelFeeVal) 
-      : 0;
-    const logisticsTotal = logisticsBase + logisticsFee;
-
-    const tripWorkingTotal = nWorkingDays * cTotalCharge;
-    const tripGrandTotal = tripWorkingTotal + tripTravelTotal + logisticsTotal;
-
-    return {
-      cRate, cMarginVal, feeType, cEmployerNI, cTotalCharge, cManagementFee,
-      cPension, cAppyLevy, cContingency, cTotalAdditions,
-      cSubTravelAmt, cSubOnboardAmt,
-      cTravelRate, cTravelNI, cTravelFeeVal, travelFeeType, cTravelManagementFee, cTravelDayCharge,
-      nWorkingDays, nTravelDays, travelPayableDays, travelSubDays,
-      logisticsBase, logisticsFee, logisticsTotal,
-      tripWorkingTotal, tripTravelTotal, tripGrandTotal,
-      totalBarVal: Math.max(cTotalCharge, 1)
-    };
-  }, [dbConsolidatedRate, feeType, dbMargin, includePension, includeAppyLevy, includeContingency, contingencyType, dbContingencyValue, includeNI, niMode, seafarerExempt, dbSubTravel, dbSubOnboard, includeSubsistence, subsistenceInFee, travelDayFull, travelFeeType, dbTravelFee, dbWorkingDays, dbTravelDays, dbMobTravel, dbMobVisas, dbMobAgent, logisticsInFee]);
-
-  const perm = useMemo(() => {
-    const pSalaryInput = parseFloat(dbSalary) || 0;
-    const pFxReady = pCurrency === 'GBP' || pFx.rate !== null;
-    const pSalary = pCurrency === 'GBP' ? pSalaryInput : (pFx.rate !== null ? pSalaryInput * pFx.rate : 0);
-    const pFeePct = parseFloat(dbPlacementFee) || 0;
-    const pPlacementFee = pFxReady ? pSalary * (pFeePct / 100) : 0;
-    const pEmployerNI = includePermNI ? Math.max(0, (pSalary - FISCAL_RATES.permNIThreshold) * FISCAL_RATES.permNI) : 0;
-
-    return { pSalaryInput, pFxReady, pSalary, pFeePct, pPlacementFee, pEmployerNI, pTotalCost: pPlacementFee + pEmployerNI };
-  }, [dbSalary, dbPlacementFee, includePermNI, pCurrency, pFx.rate]);
-
-  // STAGE 1 — raw paydays math (expensive, depends on dates/calendar logic)
-  const rawPaydays = useMemo(() => {
-    if (!pdStartDate || !pdFinishDate) return { splits: [], error: null };
-    const start = parseDate(pdStartDate);
-    const finish = parseDate(pdFinishDate);
-    if (finish < start) return { splits: [], error: 'Finish date must be on or after start date.' };
-
-    const startVal = pdStartMode === 'full' ? 1 : pdStartMode === 'half' ? 0.5 : parseFloat(pdStartCustomVal) || 0;
-    const finishVal = pdFinishMode === 'full' ? 1 : pdFinishMode === 'half' ? 0.5 : parseFloat(pdFinishCustomVal) || 0;
-
-    const isWorkingDay = (d: Date) => !isWeekend(d) && !bankHolidays.has(isoDate(d));
-    const monthlyPayday = (y: number, m: number) => {
-      let d = new Date(y, m, 28, 12, 0, 0, 0);
-      while (!isWorkingDay(d)) d = addDays(d, -1);
-      return d;
-    };
-
-    try {
-      const cutoffs: Array<{ payday: Date; cutoff: Date }> = [];
-      if (pdPayrollType === 'fortnightly') {
-        let idx = Math.floor(Math.round((start.getTime() - FN_ANCHOR.getTime()) / 86400000) / 14);
-        while (sundayBefore(addDays(FN_ANCHOR, (idx - 1) * 14)).getTime() >= start.getTime()) idx--;
-        while (sundayBefore(addDays(FN_ANCHOR, idx * 14)).getTime() < start.getTime()) idx++;
-        for (;;) {
-          const payday = addDays(FN_ANCHOR, idx * 14);
-          const cutoff = sundayBefore(payday);
-          cutoffs.push({ payday, cutoff });
-          if (cutoff.getTime() >= finish.getTime()) break;
-          idx++;
-        }
-      } else {
-        let year = start.getFullYear(), month = start.getMonth();
-        for (let i = 0; i < 25; i++) {
-          const cutoff = new Date(year, month, 20, 12, 0, 0, 0);
-          if (cutoff.getTime() >= start.getTime()) {
-            cutoffs.push({ payday: monthlyPayday(year, month), cutoff });
-            if (cutoff.getTime() >= finish.getTime()) break;
-          }
-          if (++month > 11) { month = 0; year++; }
-        }
-      }
-
-      const splits: any[] = [];
-      let periodStart = start, carryDays = 0, finishReached = false, i = 0;
-
-      while (true) {
-        if (i >= cutoffs.length) {
-          if (pdPayrollType === 'monthly' && carryDays > 0) {
-            const last = cutoffs[cutoffs.length - 1];
-            let m = last.payday.getMonth() + 1, y = last.payday.getFullYear();
-            if (m > 11) { m = 0; y++; }
-            cutoffs.push({ payday: monthlyPayday(y, m), cutoff: new Date(y, m, 20, 12, 0, 0, 0) });
-          } else break;
-        }
-
-        const { payday, cutoff } = cutoffs[i];
-        let rawDays = 0, periodEnd = cutoff;
-
-        if (finishReached) { rawDays = 0; }
-        else {
-          const isLast = cutoff.getTime() >= finish.getTime();
-          periodEnd = isLast ? finish : cutoff;
-          const diff = Math.round((periodEnd.getTime() - periodStart.getTime()) / 86400000);
-          rawDays = diff === 0 ? (i === 0 ? startVal : isLast ? finishVal : 1) : ((i === 0 ? startVal : 1) + (diff - 1) + (isLast ? finishVal : 1));
-          if (isLast) finishReached = true;
-        }
-
-        let days = rawDays + carryDays;
-        carryDays = pdPayrollType === 'monthly' && days > 31 ? days - 31 : 0;
-        if (carryDays > 0) days = 31;
-
-        const periodLabel = pdPayrollType === 'monthly' ? `${MONTH_NAMES[payday.getMonth()]} ${payday.getFullYear()}` : `${formatUK(periodStart)} – ${formatUK(periodEnd)}`;
-        splits.push({ periodStart, periodEnd, cutoff, payday, periodLabel, days });
-
-        if (finishReached && carryDays <= 0) break;
-        periodStart = addDays(cutoff, 1);
-        i++;
-      }
-
-      return { splits, error: null };
-    } catch {
-      return { splits: [], error: 'Calculation failed.' };
-    }
-  }, [pdStartDate, pdFinishDate, pdPayrollType, pdStartMode, pdStartCustomVal, pdFinishMode, pdFinishCustomVal, bankHolidays]);
-
-  // STAGE 2 — overrides and mapping (cheap, responds instantly to input tweaks)
   const paydays = useMemo(() => {
     if (rawPaydays.error || !rawPaydays.splits.length) {
       return { splits: [], error: rawPaydays.error, totalDays: null, totalSubDays: null, totalSub: null };
@@ -671,8 +700,8 @@ export default function CalculatorPage() {
   const copyContractBreakdown = () => {
     let text = `Maritime Contract Charge Breakdown (Per Day)\n-----------------------------------\n`;
     text += `Consolidated Rate: ${formatCurrencyIn(contract.cRate, cCurrency)}\n`;
-    if (includePension) text += `Pension (${FISCAL_RATES.pension * 100}%): ${formatCurrencyIn(contract.cPension, cCurrency)}\n`;
-    if (includeAppyLevy) text += `Apprenticeship Levy (${FISCAL_RATES.apprenticeshipLevy * 100}%): ${formatCurrencyIn(contract.cAppyLevy, cCurrency)}\n`;
+    if (includePension) text += `Pension (${activeFiscalRates.pension * 100}%): ${formatCurrencyIn(contract.cPension, cCurrency)}\n`;
+    if (includeAppyLevy) text += `Apprenticeship Levy (${activeFiscalRates.apprenticeshipLevy * 100}%): ${formatCurrencyIn(contract.cAppyLevy, cCurrency)}\n`;
     if (includeContingency) text += `Contingency: ${formatCurrencyIn(contract.cContingency, cCurrency)}\n`;
 
     if (includeNI && !seafarerExempt) {
@@ -693,7 +722,7 @@ export default function CalculatorPage() {
        text += `\nConverted Equivalent (GBP): ${formatCurrencyIn(contract.cTotalCharge * cFx.rate, 'GBP')} (@ 1 ${cCurrency} = ${cFx.rate.toFixed(4)} GBP)`;
     }
 
-    copyText(text).then(ok => showToast(ok ? 'Charge breakdown copied' : 'Copy failed — please select and copy manually'));
+    copyText(text).then(ok => showToast(ok ? 'Charge breakdown copied' : 'Clipboard access denied. Please select and copy manually.'));
   };
 
   const copyTripSummary = () => {
@@ -708,19 +737,20 @@ export default function CalculatorPage() {
        text += `\nConverted Equivalent (GBP): ${formatCurrencyIn(contract.tripGrandTotal * cFx.rate, 'GBP')} (@ 1 ${cCurrency} = ${cFx.rate.toFixed(4)} GBP)`;
     }
 
-    copyText(text).then(ok => showToast(ok ? 'Hitch summary copied' : 'Copy failed — please select and copy manually'));
+    copyText(text).then(ok => showToast(ok ? 'Hitch summary copied' : 'Clipboard access denied. Please select and copy manually.'));
   };
 
   const copyPermSummary = () => {
     let text = `Permanent Placement Summary\n-----------------------------------\n`;
     text += `Annual Salary: ${formatCurrencyIn(perm.pSalaryInput, pCurrency)}\n`;
     if (pCurrency !== 'GBP') text += `Converted Salary (GBP): ${formatCurrencyIn(perm.pSalary, 'GBP')} (@ 1 ${pCurrency} = ${pFx.rate?.toFixed(4) || '...'} GBP)\n`;
-    text += `Placement Fee (${perm.pFeePct}%): ${formatCurrencyIn(perm.pPlacementFee, 'GBP')}\n`;
-    if (includePermNI) text += `Employer's NI: ${formatCurrencyIn(perm.pEmployerNI, 'GBP')}\n`;
-    text += `-----------------------------------\n`;
-    text += `Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrencyIn(includePermNI ? perm.pTotalCost : perm.pPlacementFee, 'GBP')}`;
 
-    copyText(text).then(ok => showToast(ok ? 'Permanent summary copied' : 'Copy failed — please select and copy manually'));
+    text += `Placement Fee (${perm.pFeePct}%): ${formatCurrencyIn(perm.pPlacementFee, invoiceInOrigin ? pCurrency : 'GBP')}\n`;
+    if (includePermNI) text += `Employer's NI: ${formatCurrencyIn(perm.pEmployerNI, 'GBP')} (UK Tax)\n`;
+    text += `-----------------------------------\n`;
+    text += `Total ${includePermNI ? 'Cost' : 'Invoice'}: ${formatCurrencyIn(includePermNI ? perm.pTotalCost : perm.pPlacementFee, invoiceInOrigin ? pCurrency : 'GBP')}`;
+
+    copyText(text).then(ok => showToast(ok ? 'Permanent summary copied' : 'Clipboard access denied. Please select and copy manually.'));
   };
 
   const copyPaydaysSummary = () => {
@@ -759,7 +789,7 @@ export default function CalculatorPage() {
       text += `\n\n`;
     });
 
-    copyText(text.trim()).then(ok => showToast(ok ? 'Payment schedule copied' : 'Copy failed — please select and copy manually'));
+    copyText(text.trim()).then(ok => showToast(ok ? 'Payment schedule copied' : 'Clipboard access denied. Please select and copy manually.'));
   };
 
   const exportScheduleCSV = () => {
@@ -807,6 +837,19 @@ export default function CalculatorPage() {
           </div>
 
           <div className="flex flex-col sm:items-end gap-3">
+             <div className="flex items-center gap-2">
+               <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Tax Year</label>
+               <select 
+                 className="px-3 py-1.5 bg-input/20 border border-input rounded-lg text-sm font-bold focus:ring-2 focus:ring-primary focus:outline-none"
+                 value={taxYear}
+                 onChange={(e) => setTaxYear(e.target.value as TaxProfile)}
+                 aria-label="Select Tax Year"
+               >
+                 {Object.keys(FISCAL_PROFILES).map(year => (
+                   <option key={year} value={year}>{year}</option>
+                 ))}
+               </select>
+             </div>
             <div className="flex flex-wrap items-center gap-2 bg-input/20 p-2 rounded-xl border border-input/40">
                <select 
                  className="px-3 py-2 bg-background border border-input rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none"
@@ -837,9 +880,9 @@ export default function CalculatorPage() {
 
         <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)} className="w-full">
           <TabsList className="grid w-full max-w-2xl grid-cols-3 mb-8 bg-input/40 p-1 rounded-xl print:hidden">
-            <TabsTrigger value="contract" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300"><Ship className="h-4 w-4" />Contract <span className="hidden sm:inline">& Hitch</span></TabsTrigger>
-            <TabsTrigger value="perm" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300"><Briefcase className="h-4 w-4" />Permanent</TabsTrigger>
-            <TabsTrigger value="paydays" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300"><CalendarDays className="h-4 w-4" />Payment Days</TabsTrigger>
+            <TabsTrigger value="contract" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300 focus-visible:ring-2 focus-visible:ring-primary"><Ship className="h-4 w-4" />Contract <span className="hidden sm:inline">& Hitch</span></TabsTrigger>
+            <TabsTrigger value="perm" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300 focus-visible:ring-2 focus-visible:ring-primary"><Briefcase className="h-4 w-4" />Permanent</TabsTrigger>
+            <TabsTrigger value="paydays" className="flex gap-2 text-xs sm:text-sm rounded-lg data-[state=active]:shadow-sm transition-all duration-300 focus-visible:ring-2 focus-visible:ring-primary"><CalendarDays className="h-4 w-4" />Payment Days</TabsTrigger>
           </TabsList>
 
           {/* ─────────────── MARITIME CONTRACT TAB ─────────────── */}
@@ -907,7 +950,7 @@ export default function CalculatorPage() {
                     <div className="flex justify-between group">
                       <div className="space-y-1 pr-4">
                         <label className="text-sm font-bold cursor-pointer group-hover:text-primary transition-colors" onClick={() => setIncludePension(!includePension)}>Include Pension</label>
-                        <p className="text-xs text-muted-foreground font-medium">Standard {FISCAL_RATES.pension * 100}% addition</p>
+                        <p className="text-xs text-muted-foreground font-medium">Standard {activeFiscalRates.pension * 100}% addition</p>
                       </div>
                       <Switch checked={includePension} onCheckedChange={setIncludePension} />
                     </div>
@@ -918,7 +961,7 @@ export default function CalculatorPage() {
                           Include Apprenticeship Levy
                           <Tooltip text="A 0.5% tax on large employers to fund apprenticeship training." />
                         </label>
-                        <p className="text-xs text-muted-foreground font-medium">Standard {FISCAL_RATES.apprenticeshipLevy * 100}% addition</p>
+                        <p className="text-xs text-muted-foreground font-medium">Standard {activeFiscalRates.apprenticeshipLevy * 100}% addition</p>
                       </div>
                       <Switch checked={includeAppyLevy} onCheckedChange={setIncludeAppyLevy} />
                     </div>
@@ -1138,6 +1181,7 @@ export default function CalculatorPage() {
                     <h2 className="text-xl font-bold">Charge Rate Breakdown</h2>
                     <div className="flex items-center gap-3">
                       <ActionButton onClick={copyContractBreakdown} icon={Copy} label="Copy" />
+                      <ActionButton onClick={printSchedule} icon={Printer} label="Print PDF" />
                       <span className="text-xs uppercase tracking-widest font-bold px-3 py-1.5 bg-primary-foreground/10 rounded-full print:bg-gray-200">Per Day Onboard</span>
                     </div>
                   </div>
@@ -1154,13 +1198,13 @@ export default function CalculatorPage() {
                   <div className="space-y-3 relative z-0">
                     <LineItem label="Consolidated Day Rate" value={contract.cRate} isBold currency={cCurrency} />
 
-                    {includePension && <LineItem label={`Pension (${FISCAL_RATES.pension * 100}%)`} value={contract.cPension} currency={cCurrency} />}
-                    {includeAppyLevy && <LineItem label={`Apprenticeship Levy (${FISCAL_RATES.apprenticeshipLevy * 100}%)`} value={contract.cAppyLevy} currency={cCurrency} />}
+                    {includePension && <LineItem label={`Pension (${activeFiscalRates.pension * 100}%)`} value={contract.cPension} currency={cCurrency} />}
+                    {includeAppyLevy && <LineItem label={`Apprenticeship Levy (${activeFiscalRates.apprenticeshipLevy * 100}%)`} value={contract.cAppyLevy} currency={cCurrency} />}
                     {includeContingency && <LineItem label={`Contingency (${contingencyType === 'percentage' && contract.cContingency > 0 ? dbContingencyValue + '%' : 'Fixed'})`} value={contract.cContingency} currency={cCurrency} />}
 
                     {includeNI && (
                       <LineItem 
-                        label={seafarerExempt ? "Employers NIC (Exempt)" : `Employers NIC (${FISCAL_RATES.employerNI * 100}%)`} 
+                        label={seafarerExempt ? "Employers NIC (Exempt)" : `Employers NIC (${activeFiscalRates.employerNI * 100}%)`} 
                         value={contract.cEmployerNI} 
                         currency={cCurrency}
                       />
@@ -1206,8 +1250,8 @@ export default function CalculatorPage() {
                     </div>
                     <div className="space-y-2.5">
                       <LineItem label={`Consolidated Rate (×${travelDayFull ? '1' : '0.5'})`} value={contract.cTravelRate} currency={cCurrency} />
-                      {includePension && <LineItem label="Pension" value={contract.cTravelRate * FISCAL_RATES.pension} currency={cCurrency} />}
-                      {includeAppyLevy && <LineItem label="Apprenticeship Levy" value={contract.cTravelRate * FISCAL_RATES.apprenticeshipLevy} currency={cCurrency} />}
+                      {includePension && <LineItem label="Pension" value={contract.cTravelRate * activeFiscalRates.pension} currency={cCurrency} />}
+                      {includeAppyLevy && <LineItem label="Apprenticeship Levy" value={contract.cTravelRate * activeFiscalRates.apprenticeshipLevy} currency={cCurrency} />}
                       {includeContingency && <LineItem label="Contingency" value={contract.cTravelContingency} currency={cCurrency} />}
                       {includeNI && !seafarerExempt && <LineItem label="Employers NIC" value={contract.cTravelNI} currency={cCurrency} />}
                       {includeSubsistence && contract.cSubTravelAmt > 0 && <LineItem label="Travel Subsistence (Always 100%)" value={contract.cSubTravelAmt} currency={cCurrency} />}
@@ -1272,9 +1316,6 @@ export default function CalculatorPage() {
                               <span className="text-xs text-primary-foreground/50 print:text-gray-500 font-medium">{contract.nWorkingDays + contract.nTravelDays} days total</span>
                             </div>
                             <span className="text-3xl font-mono font-bold tracking-tight text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={contract.tripGrandTotal}>{formatCurrencyIn(contract.tripGrandTotal, cCurrency)}</span>
-                          </div>
-                          <div aria-live="polite" className="sr-only">
-                            Total Hitch Invoice is {formatCurrencyIn(contract.tripGrandTotal, cCurrency)}
                           </div>
 
                           {cCurrency !== 'GBP' && cFx.rate !== null && (
@@ -1367,16 +1408,27 @@ export default function CalculatorPage() {
                       <label htmlFor="placement-fee" className="block text-sm font-bold text-foreground">Placement Fee (%)</label>
                       <NumInput id="placement-fee" value={placementFee} onChange={setPlacementFee} suffix="%" placeholder="0.0" />
                     </div>
+
+                    <AnimatedSection show={pCurrency !== 'GBP'}>
+                       <div className="flex justify-between group border-t border-border/60 pt-4">
+                         <div className="space-y-1 pr-4">
+                           <label className="text-sm font-bold text-foreground cursor-pointer group-hover:text-primary transition-colors" onClick={() => setInvoiceInOrigin(!invoiceInOrigin)}>Invoice in Origin Currency</label>
+                           <p className="text-xs text-muted-foreground font-medium">Calculate placement fee in {pCurrency} instead of GBP</p>
+                         </div>
+                         <Switch checked={invoiceInOrigin} onCheckedChange={setInvoiceInOrigin} />
+                       </div>
+                    </AnimatedSection>
+
                     <div className="pt-4 flex justify-between border-t border-border/60 group">
                       <div className="space-y-1 pr-4">
                         <label className="text-sm font-bold text-foreground cursor-pointer group-hover:text-primary transition-colors" onClick={() => setIncludePermNI(!includePermNI)}>Include Employer's NI</label>
-                        <p className="text-xs text-muted-foreground font-medium">Informational only. ({FISCAL_RATES.permNI * 100}% over £{FISCAL_RATES.permNIThreshold})</p>
+                        <p className="text-xs text-muted-foreground font-medium">Informational UK tax. ({activeFiscalRates.permNI * 100}% over £{activeFiscalRates.permNIThreshold})</p>
                       </div>
                       <Switch checked={includePermNI} onCheckedChange={setIncludePermNI} />
                     </div>
                   </div>
                 </div>
-                <AssumptionsAccordion />
+                <AssumptionsAccordion fiscalRates={activeFiscalRates} />
               </div>
 
               <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:col-span-12 print:shadow-none print:w-full print:bg-white print:text-black print:border-2">
@@ -1402,7 +1454,7 @@ export default function CalculatorPage() {
                     <h2 className="text-xl font-bold">Invoice Breakdown</h2>
                     <div className="flex items-center gap-3">
                       <ActionButton onClick={copyPermSummary} icon={Copy} label="Copy" />
-                      <ActionButton onClick={printSchedule} icon={Printer} label="Print" />
+                      <ActionButton onClick={printSchedule} icon={Printer} label="Print PDF" />
                       <span className="text-xs uppercase tracking-widest font-bold px-3 py-1.5 bg-primary-foreground/10 rounded-full print:bg-gray-200">Permanent</span>
                     </div>
                   </div>
@@ -1421,24 +1473,30 @@ export default function CalculatorPage() {
                       </div>
                     ) : (
                       <>
-                        <LineItem label={`Placement Fee (${perm.pFeePct.toFixed(1)}%)`} value={perm.pPlacementFee} isBold />
+                        <LineItem label={`Placement Fee (${perm.pFeePct.toFixed(1)}%)`} value={perm.pPlacementFee} isBold currency={invoiceInOrigin ? pCurrency : 'GBP'} />
                         <div className="text-xs text-primary-foreground/60 print:text-gray-500 font-medium bg-primary-foreground/5 print:bg-gray-50 print:border print:border-gray-200 p-2.5 rounded-lg flex items-center gap-2">
                           <Info className="h-3.5 w-3.5 shrink-0" />
-                          <span>Fee = {perm.pFeePct}% × {formatCurrencyIn(perm.pSalary, 'GBP')}</span>
+                          <span>Fee = {perm.pFeePct}% × {formatCurrencyIn(invoiceInOrigin ? perm.pSalaryInput : perm.pSalary, invoiceInOrigin ? pCurrency : 'GBP')}</span>
                         </div>
                       </>
                     )}
-                    {includePermNI && perm.pFxReady && (<><div className="h-px bg-primary-foreground/20 my-4 print:bg-gray-300" /><LineItem label="Employer's NI on Salary" value={perm.pEmployerNI} /></>)}
+                    {includePermNI && perm.pFxReady && (<><div className="h-px bg-primary-foreground/20 my-4 print:bg-gray-300" /><LineItem label="Employer's NI on Salary (UK Tax)" value={perm.pEmployerNI} currency="GBP" /></>)}
 
                     <div className="mt-4 pt-5 border-t-2 border-primary-foreground/30 print:border-gray-300">
                       <div className="flex items-center justify-between">
                         <span className="text-lg font-bold">Total Invoice to Client</span>
-                        <span className="text-3xl font-mono font-bold tracking-tight text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={perm.pPlacementFee}>{formatCurrencyIn(perm.pPlacementFee, 'GBP')}</span>
+                        <span className="text-3xl font-mono font-bold tracking-tight text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={perm.pTotalCost}>{formatCurrencyIn(includePermNI ? perm.pTotalCost : perm.pPlacementFee, invoiceInOrigin ? pCurrency : 'GBP')}</span>
                       </div>
                       <div aria-live="polite" className="sr-only">
-                        Placement Fee Invoice is {formatCurrencyIn(perm.pPlacementFee, 'GBP')}
+                        Placement Fee Invoice is {formatCurrencyIn(includePermNI ? perm.pTotalCost : perm.pPlacementFee, invoiceInOrigin ? pCurrency : 'GBP')}
                       </div>
-                      <p className="text-xs text-primary-foreground/50 print:text-gray-500 font-medium mt-1">Invoiced in GBP regardless of salary currency.</p>
+                      <p className="text-xs text-primary-foreground/50 print:text-gray-500 font-medium mt-1">
+                        {invoiceInOrigin && pCurrency !== 'GBP' && includePermNI 
+                          ? "Notice: Cost blends multiple currencies." 
+                          : invoiceInOrigin 
+                            ? `Invoiced strictly in ${pCurrency}.`
+                            : "Invoiced in GBP regardless of origin salary currency."}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -1511,7 +1569,7 @@ export default function CalculatorPage() {
                     </AnimatedSection>
                   </div>
                 </div>
-                <AssumptionsAccordion />
+                <AssumptionsAccordion fiscalRates={activeFiscalRates} />
               </div>
 
               <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:col-span-12 print:shadow-none print:w-full print:text-black print:bg-white print:border-2">
@@ -1536,7 +1594,7 @@ export default function CalculatorPage() {
                     {paydays.splits.length > 0 && (
                       <div className="flex items-center gap-2 print:hidden">
                         <ActionButton onClick={copyPaydaysSummary} icon={Copy} label="Copy" />
-                        <ActionButton onClick={printSchedule} icon={Printer} label="Print" />
+                        <ActionButton onClick={printSchedule} icon={Printer} label="Print PDF" />
                         <ActionButton onClick={exportScheduleCSV} icon={Download} label="CSV" />
                       </div>
                     )}
@@ -1690,19 +1748,6 @@ export default function CalculatorPage() {
           </TabsContent>
         </Tabs>
       </div>
-
-      <div aria-live="polite" className="fixed bottom-0 left-0 right-0 bg-primary border-t border-primary-foreground/10 text-primary-foreground p-4 md:hidden z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] animate-in slide-in-from-bottom-full duration-500 print:hidden">
-        <div className="flex items-center justify-between max-w-5xl mx-auto">
-          <div className="text-xs font-bold uppercase tracking-widest text-primary-foreground/70">
-            {mode === 'contract' ? (includeTrip ? 'Total Hitch' : 'Charge Rate') : mode === 'perm' ? 'Placement Fee' : (mode === 'paydays' && pdIncludePay ? 'Total Net Pay' : 'Total Days')}
-          </div>
-          <div className="text-xl font-mono font-bold text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={mode}>
-            {mode === 'contract' ? (includeTrip ? formatCurrencyIn(contract.tripGrandTotal, cCurrency) : formatCurrencyIn(contract.cTotalCharge, cCurrency)) 
-              : mode === 'perm' ? formatCurrencyIn(perm.pPlacementFee, 'GBP') 
-              : (mode === 'paydays' && pdIncludePay ? formatCurrencyIn(pdTotalNet, 'GBP') : (paydays.totalDays ?? 0))}
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
@@ -1741,7 +1786,7 @@ const ProjectionCard = React.memo(function ProjectionCard({ label, days, charge,
   );
 });
 
-function AssumptionsAccordion({ maritime = false }: { maritime?: boolean }) {
+function AssumptionsAccordion({ maritime = false, fiscalRates }: { maritime?: boolean, fiscalRates: any }) {
   return (
     <details className="group [&_summary::-webkit-details-marker]:hidden bg-card border border-card-border rounded-2xl shadow-sm transition-all overflow-hidden print:hidden">
       <summary className="flex items-center justify-between cursor-pointer font-bold text-sm p-6 hover:bg-input/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
@@ -1753,7 +1798,7 @@ function AssumptionsAccordion({ maritime = false }: { maritime?: boolean }) {
           <>
             <div className="space-y-1">
               <strong className="text-foreground block">Seafarer NI Exemption</strong>
-              <p>Standard NI is calculated at {FISCAL_RATES.employerNI * 100}%. When "Seafarer Exemption" is toggled, Employer NI evaluates to 0, assuming the vessel operates fully outside the UK Continental Shelf (UKCS) or is a non-UK flagged vessel avoiding UK NIC obligations.</p>
+              <p>Standard NI is calculated at {fiscalRates.employerNI * 100}%. When "Seafarer Exemption" is toggled, Employer NI evaluates to 0, assuming the vessel operates fully outside the UK Continental Shelf (UKCS) or is a non-UK flagged vessel avoiding UK NIC obligations.</p>
             </div>
             <div className="space-y-1">
               <strong className="text-foreground block">Subsistence Rules (Travel vs Victualling)</strong>
@@ -1763,7 +1808,7 @@ function AssumptionsAccordion({ maritime = false }: { maritime?: boolean }) {
         ) : (
           <div className="space-y-1">
             <strong className="text-foreground block">Employer NI Calculation</strong>
-            <p>Perm NI informational calculation assumes {FISCAL_RATES.permNI * 100}% over the £{FISCAL_RATES.permNIThreshold} secondary threshold.</p>
+            <p>Perm NI informational calculation assumes {fiscalRates.permNI * 100}% over the £{fiscalRates.permNIThreshold} secondary threshold.</p>
           </div>
         )}
         <div className="space-y-1">
