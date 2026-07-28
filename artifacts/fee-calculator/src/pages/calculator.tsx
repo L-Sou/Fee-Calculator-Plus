@@ -500,8 +500,16 @@ function useFxRate(currency: CurrencyCode, baseDate: string) {
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // New state for manual overrides
+  const [isManual, setIsManual] = useState(false);
+  const [manualRate, setManualRate] = useState<string>('');
+
   useEffect(() => {
-    if (currency === 'GBP') { setRate(null); setError(null); setLoading(false); return; }
+    if (currency === 'GBP' || isManual) { 
+      if (currency === 'GBP') { setRate(null); setError(null); setLoading(false); }
+      return; 
+    }
+
     let cancelled = false;
     setLoading(true); setError(null);
     const datePart = baseDate > new Date().toISOString().slice(0, 10) ? 'latest' : baseDate;
@@ -511,15 +519,33 @@ function useFxRate(currency: CurrencyCode, baseDate: string) {
       .then(data => {
         if (!cancelled && data?.rates?.GBP) {
           setRate(data.rates.GBP);
+          setManualRate(data.rates.GBP.toString()); // Pre-fill manual input just in case
           if (datePart === 'latest' && baseDate > new Date().toISOString().slice(0, 10)) setError('future-date-fallback');
         }
       })
-      .catch(() => { if (!cancelled) setError('Exchange rate service offline.'); })
+      .catch(() => { 
+        if (!cancelled) {
+          setError('Exchange rate service offline.');
+          setIsManual(true); // Force manual mode if API dies
+        }
+      })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [currency, baseDate, refreshKey]);
+  }, [currency, baseDate, refreshKey, isManual]);
 
-  return { rate, loading, error, refresh: () => setRefreshKey(k => k + 1) };
+  // Return the active rate based on mode
+  const activeRate = isManual ? (parseFloat(manualRate) || null) : rate;
+
+  return { 
+    rate: activeRate, 
+    loading: loading && !isManual, 
+    error, 
+    refresh: () => setRefreshKey(k => k + 1),
+    isManual,
+    setIsManual,
+    manualRate,
+    setManualRate
+  };
 }
 
 // ─── 4. Reusable Sub-components ───────────────────────────────────────────────
@@ -543,13 +569,33 @@ interface NumInputProps {
   placeholder?: string;
   'aria-label'?: string;
 }
-const NumInput = ({ id, value, onChange, prefix, suffix, placeholder = '0.00', 'aria-label': ariaLabel }: NumInputProps) => (
-  <div className="relative group flex-1">
-    {prefix && <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 dark:text-slate-400 font-mono pointer-events-none transition-colors group-focus-within:text-slate-900 dark:group-focus-within:text-white">{prefix}</span>}
-    <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} min="0" className={cn('w-full py-3 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 transition-all duration-200 tabular-nums text-base font-medium placeholder:text-slate-500 dark:placeholder:text-slate-400', prefix ? (prefix.length > 1 ? 'pl-16 pr-4' : 'pl-10 pr-4') : suffix ? 'pl-4 pr-10' : 'px-4')} />
-    {suffix && <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 dark:text-slate-400 font-mono transition-colors group-focus-within:text-slate-900 dark:group-focus-within:text-white">{suffix}</span>}
-  </div>
-);
+const NumInput = ({ id, value, onChange, prefix, suffix, placeholder = '0.00', 'aria-label': ariaLabel }: NumInputProps) => {
+  const numericValue = parseFloat(String(value));
+  const isInvalid = String(value).trim() !== '' && (isNaN(numericValue) || numericValue < 0);
+
+  return (
+    <div className="relative group flex-1">
+      {prefix && <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 dark:text-slate-400 font-mono pointer-events-none transition-colors group-focus-within:text-slate-900 dark:group-focus-within:text-white">{prefix}</span>}
+      <input 
+        id={id} 
+        type="number" 
+        value={value} 
+        onChange={(e) => onChange(e.target.value)} 
+        aria-label={ariaLabel} 
+        placeholder={placeholder} 
+        min="0" 
+        className={cn(
+          'w-full py-3 bg-black/5 dark:bg-white/5 border text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 transition-all duration-200 tabular-nums text-base font-medium placeholder:text-slate-500 dark:placeholder:text-slate-400', 
+          prefix ? (prefix.length > 1 ? 'pl-16 pr-4' : 'pl-10 pr-4') : suffix ? 'pl-4 pr-10' : 'px-4',
+          isInvalid 
+            ? 'border-red-500 focus:ring-red-500/50 dark:border-red-500 dark:focus:ring-red-500/50' 
+            : 'border-black/10 dark:border-white/10 focus:ring-slate-900/20 dark:focus:ring-white/20'
+        )} 
+      />
+      {suffix && <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 dark:text-slate-400 font-mono transition-colors group-focus-within:text-slate-900 dark:group-focus-within:text-white">{suffix}</span>}
+    </div>
+  );
+};
 
 interface SegmentedControlProps {
   value: string;
@@ -572,7 +618,7 @@ interface ActionButtonProps {
   onClick: () => void;
   icon: React.ElementType;
   label: string;
-}
+  }
 const ActionButton = ({ onClick, icon: Icon, label }: ActionButtonProps) => (
   <button onClick={onClick} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white print:hidden" title={label} aria-label={label}>
     <Icon className="h-3.5 w-3.5" /><span className="hidden sm:inline">{label}</span>
@@ -1035,21 +1081,35 @@ export default function CalculatorPage() {
                           <input id="c-fx-date" type="date" value={s.cFxDate} onChange={(e) => s.updateField('cFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 transition-all text-sm font-medium" />
                         </div>
                         <div className="flex items-center justify-between rounded-lg bg-white/50 dark:bg-black/20 border border-slate-200 dark:border-slate-800 px-3 py-2.5">
-                          <div className="text-sm font-medium">
-                            {cFx.loading ? (
-                              <span className="text-slate-500 dark:text-slate-400">Fetching rate…</span>
-                            ) : cFx.rate !== null ? (
-                              <span className="font-mono font-bold animate-in fade-in duration-300 text-slate-900 dark:text-slate-50">1 {s.cCurrency} = {cFx.rate.toFixed(4)} GBP</span>
-                            ) : (
-                              <span className="text-slate-500 dark:text-slate-400">No rate yet</span>
-                            )}
-                          </div>
-                          <button onClick={cFx.refresh} aria-label="Refresh exchange rate" className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white">
-                            <RefreshCw className={cn('h-3.5 w-3.5', cFx.loading && 'animate-spin')} />
-                          </button>
+                          {cFx.isManual ? (
+                            <div className="flex items-center gap-2 w-full">
+                              <span className="text-sm font-bold text-slate-900 dark:text-slate-50 whitespace-nowrap">1 {s.cCurrency} = </span>
+                              <input type="number" value={cFx.manualRate} onChange={(e) => cFx.setManualRate(e.target.value)} placeholder="0.0000" className="w-full px-2 py-1 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20" />
+                              <span className="text-sm font-bold text-slate-900 dark:text-slate-50">GBP</span>
+                            </div>
+                          ) : (
+                             <div className="text-sm font-medium">
+                               {cFx.loading ? (
+                                 <span className="text-slate-500 dark:text-slate-400">Fetching rate…</span>
+                               ) : cFx.rate !== null ? (
+                                 <span className="font-mono font-bold animate-in fade-in duration-300 text-slate-900 dark:text-slate-50">1 {s.cCurrency} = {cFx.rate.toFixed(4)} GBP</span>
+                               ) : (
+                                 <span className="text-slate-500 dark:text-slate-400">No rate yet</span>
+                               )}
+                             </div>
+                          )}
+                          {!cFx.isManual && (
+                             <button onClick={cFx.refresh} aria-label="Refresh exchange rate" className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white">
+                               <RefreshCw className={cn('h-3.5 w-3.5', cFx.loading && 'animate-spin')} />
+                             </button>
+                          )}
                         </div>
-                        {cFx.error === 'future-date-fallback' && (
-                          <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-500 font-medium">
+                        <div className="flex items-center justify-between pt-1 px-1">
+                          <label className="text-xs font-bold cursor-pointer text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 transition-colors" onClick={() => cFx.setIsManual(!cFx.isManual)}>Manual Override</label>
+                          <Switch checked={cFx.isManual} onCheckedChange={(v: boolean) => cFx.setIsManual(v)} className="scale-75 origin-right" />
+                        </div>
+                        {cFx.error === 'future-date-fallback' && !cFx.isManual && (
+                          <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-500 font-medium mt-2">
                             <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                             <span>Future date selected. Showing today's latest rate instead.</span>
                           </div>
@@ -1156,7 +1216,7 @@ export default function CalculatorPage() {
                 </CollapsibleCard>
               </div>
 
-              <div className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
+              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
                 {contract.cRate === 0 && !dbConsolidatedRate ? (
                   <div className="absolute inset-0 z-10 bg-white/95 dark:bg-slate-900/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
                     <div className="p-4 bg-black/5 dark:bg-white/10 rounded-full mb-4">
@@ -1342,10 +1402,24 @@ export default function CalculatorPage() {
                           <input id="p-fx-date" type="date" value={s.pFxDate} onChange={(e) => s.updateField('pFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 transition-all text-sm font-medium" />
                         </div>
                         <div className="flex items-center justify-between rounded-lg bg-white/50 dark:bg-black/20 border border-slate-200 dark:border-slate-800 px-3 py-2.5">
-                          <div className="text-sm font-medium">
-                            {pFx.loading ? <span className="text-slate-500 dark:text-slate-400">Fetching rate…</span> : pFx.rate !== null ? <span className="font-mono font-bold text-slate-900 dark:text-slate-50">1 {s.pCurrency} = {pFx.rate.toFixed(4)} GBP</span> : <span className="text-slate-500 dark:text-slate-400">No rate yet</span>}
-                          </div>
-                          <button onClick={pFx.refresh} aria-label="Refresh exchange rate" className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white"><RefreshCw className={cn('h-3.5 w-3.5', pFx.loading && 'animate-spin')} /></button>
+                          {pFx.isManual ? (
+                            <div className="flex items-center gap-2 w-full">
+                              <span className="text-sm font-bold text-slate-900 dark:text-slate-50 whitespace-nowrap">1 {s.pCurrency} = </span>
+                              <input type="number" value={pFx.manualRate} onChange={(e) => pFx.setManualRate(e.target.value)} placeholder="0.0000" className="w-full px-2 py-1 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20" />
+                              <span className="text-sm font-bold text-slate-900 dark:text-slate-50">GBP</span>
+                            </div>
+                          ) : (
+                             <div className="text-sm font-medium">
+                               {pFx.loading ? <span className="text-slate-500 dark:text-slate-400">Fetching rate…</span> : pFx.rate !== null ? <span className="font-mono font-bold text-slate-900 dark:text-slate-50">1 {s.pCurrency} = {pFx.rate.toFixed(4)} GBP</span> : <span className="text-slate-500 dark:text-slate-400">No rate yet</span>}
+                             </div>
+                          )}
+                          {!pFx.isManual && (
+                             <button onClick={pFx.refresh} aria-label="Refresh exchange rate" className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white"><RefreshCw className={cn('h-3.5 w-3.5', pFx.loading && 'animate-spin')} /></button>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between pt-1 px-1">
+                          <label className="text-xs font-bold cursor-pointer text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 transition-colors" onClick={() => pFx.setIsManual(!pFx.isManual)}>Manual Override</label>
+                          <Switch checked={pFx.isManual} onCheckedChange={(v: boolean) => pFx.setIsManual(v)} className="scale-75 origin-right" />
                         </div>
                       </div>
                     </AnimatedSection>
@@ -1373,7 +1447,7 @@ export default function CalculatorPage() {
                  </CollapsibleCard>
                </div>
 
-               <div className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
+               <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
                   {perm.pSalaryInput === 0 && !dbSalary ? (
                     <div className="absolute inset-0 z-10 bg-white/95 dark:bg-slate-900/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
                       <div className="p-4 bg-black/5 dark:bg-white/10 rounded-full mb-4">
@@ -1492,7 +1566,7 @@ export default function CalculatorPage() {
                 </div>
               </div>
 
-              <div className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
+              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
                 <div className="p-8 md:p-10 flex-grow relative z-0">
 
                   <div className="flex items-center justify-between gap-4 mb-8">
@@ -1512,7 +1586,7 @@ export default function CalculatorPage() {
                   </div>
 
                   {!s.pdStartDate || !s.pdFinishDate ? (
-                    <div className="absolute inset-0 z-10 bg-white/95 dark:bg-slate-900/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
+                    <div className="flex flex-col items-center justify-center text-center py-16 px-6 animate-in fade-in duration-500 print:hidden">
                       <div className="p-4 bg-black/5 dark:bg-white/10 rounded-full mb-4">
                         <CalendarDays className="h-8 w-8 text-slate-900 dark:text-cyan-400" />
                       </div>
@@ -1712,7 +1786,7 @@ export default function CalculatorPage() {
                 </CollapsibleCard>
               </div>
 
-              <div className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
+              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
                 <div className="p-8 md:p-10 flex-grow relative z-0">
                   <div className="flex items-center justify-between gap-4 mb-8 print:hidden">
                     <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">Appraisal Preview</h2>
