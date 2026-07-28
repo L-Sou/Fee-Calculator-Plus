@@ -1000,7 +1000,7 @@ export default function CalculatorPage() {
 
   // ─── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-[100dvh] bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-50 py-10 px-4 sm:px-6 md:px-8 flex flex-col items-center pb-28 md:pb-10 transition-colors duration-300 font-sans antialiased tracking-tight">
+    <div className="min-h-[100dvh] bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-50 py-10 px-4 sm:px-6 md:px-8 flex flex-col items-center pb-28 md:pb-10 transition-colors duration-300 font-sans antialiased tracking-tight print:py-0 print:px-0">
       <ToastContainer />
       <div className="w-full max-w-5xl">
         <header className="mb-8 flex flex-col md:flex-row md:items-start justify-between gap-4 print:hidden">
@@ -1042,16 +1042,18 @@ export default function CalculatorPage() {
         </header>
 
         {/* Global Details Header */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-2xl shadow-sm print:shadow-none print:border-none print:p-0">
-          <div className="space-y-1">
-            <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider pl-1 print:hidden">Client Name</label>
-            <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={(e) => s.updateField('clientName', e.target.value)} className="w-full bg-transparent border-b border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 px-1 py-1 focus:outline-none focus:border-slate-900 dark:focus:border-white transition-colors placeholder:text-slate-400 dark:placeholder:text-slate-500 print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
+        {(mode === 'contract' || mode === 'perm') && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-2xl shadow-sm print:shadow-none print:border-none print:p-0">
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider pl-1 print:hidden">Client Name</label>
+              <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={(e) => s.updateField('clientName', e.target.value)} className="w-full bg-transparent border-b border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 px-1 py-1 focus:outline-none focus:border-slate-900 dark:focus:border-white transition-colors placeholder:text-slate-400 dark:placeholder:text-slate-500 print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider pl-1 sm:text-right block print:hidden">Candidate Name</label>
+              <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={(e) => s.updateField('candidateName', e.target.value)} className="w-full bg-transparent border-b border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 px-1 py-1 focus:outline-none focus:border-slate-900 dark:focus:border-white transition-colors placeholder:text-slate-400 dark:placeholder:text-slate-500 print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg" />
+            </div>
           </div>
-          <div className="space-y-1">
-            <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider pl-1 sm:text-right block print:hidden">Candidate Name</label>
-            <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={(e) => s.updateField('candidateName', e.target.value)} className="w-full bg-transparent border-b border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 px-1 py-1 focus:outline-none focus:border-slate-900 dark:focus:border-white transition-colors placeholder:text-slate-400 dark:placeholder:text-slate-500 print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg" />
-          </div>
-        </div>
+        )}
 
         <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)} className="w-full">
           <TabsList className="grid w-full max-w-3xl grid-cols-4 mb-8 bg-black/5 dark:bg-white/5 p-1 rounded-xl print:hidden">
@@ -1216,7 +1218,7 @@ export default function CalculatorPage() {
                 </CollapsibleCard>
               </div>
 
-              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
+              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
                 {contract.cRate === 0 && !dbConsolidatedRate ? (
                   <div className="absolute inset-0 z-10 bg-white/95 dark:bg-slate-900/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
                     <div className="p-4 bg-black/5 dark:bg-white/10 rounded-full mb-4">
@@ -1229,7 +1231,7 @@ export default function CalculatorPage() {
                   </div>
                 ) : null}
 
-                <div className="p-8 md:p-10 flex-grow relative z-0">
+                <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
                   <div className="flex items-center justify-between gap-4 mb-8">
                     <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">{s.crewSize !== '1' ? `Crew Charge Breakdown (${s.crewSize} Members)` : 'Charge Rate Breakdown'}</h2>
                     <div className="flex items-center gap-2">
@@ -1447,7 +1449,7 @@ export default function CalculatorPage() {
                  </CollapsibleCard>
                </div>
 
-               <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
+               <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
                   {perm.pSalaryInput === 0 && !dbSalary ? (
                     <div className="absolute inset-0 z-10 bg-white/95 dark:bg-slate-900/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
                       <div className="p-4 bg-black/5 dark:bg-white/10 rounded-full mb-4">
@@ -1460,7 +1462,7 @@ export default function CalculatorPage() {
                     </div>
                   ) : null}
 
-                  <div className="p-8 md:p-10 flex-grow relative z-0">
+                  <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
                     <div className="flex items-center justify-between gap-4 mb-8">
                       <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">Permanent Invoice Breakdown</h2>
                       <div className="flex gap-2">
@@ -1566,8 +1568,8 @@ export default function CalculatorPage() {
                 </div>
               </div>
 
-              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
-                <div className="p-8 md:p-10 flex-grow relative z-0">
+              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
+                <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
 
                   <div className="flex items-center justify-between gap-4 mb-8">
                     <div className="flex items-center gap-3">
@@ -1786,8 +1788,8 @@ export default function CalculatorPage() {
                 </CollapsibleCard>
               </div>
 
-              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none">
-                <div className="p-8 md:p-10 flex-grow relative z-0">
+              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
+                <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
                   <div className="flex items-center justify-between gap-4 mb-8 print:hidden">
                     <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">Appraisal Preview</h2>
                     <div className="flex gap-2">
