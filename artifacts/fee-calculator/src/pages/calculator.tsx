@@ -7,7 +7,7 @@ import { Switch } from '@/components/ui/switch';
 import {
   RotateCcw, Briefcase, FileText, UtensilsCrossed, 
   CalendarDays, Globe, RefreshCw, AlertCircle, Copy, Download, Printer, 
-  ChevronDown, Check, Info, Ship, Anchor, Save, Users, FileCheck
+  ChevronDown, Check, Info, Ship, Anchor, Save, Users, FileCheck, Sun, Moon, Trash2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Logo from './Logo';
@@ -180,9 +180,13 @@ function calculateContract(params: ContractParams, fiscalRates: FiscalRates) {
   const travelSubDays = Math.ceil(nTravelDays); 
 
   const cTravelRate = cRate * travelRateMultiplier;
-  const cTravelTotalAdditions = (params.includePension ? cTravelRate * fiscalRates.pension : 0) + 
-                                (params.includeAppyLevy ? cTravelRate * fiscalRates.apprenticeshipLevy : 0) + 
-                                (params.includeContingency ? (params.contingencyType === 'percentage' ? cTravelRate * (cContingencyInputVal / 100) : cContingencyInputVal * travelRateMultiplier) : 0);
+  const cTravelPension = params.includePension ? cTravelRate * fiscalRates.pension : 0;
+  const cTravelAppyLevy = params.includeAppyLevy ? cTravelRate * fiscalRates.apprenticeshipLevy : 0;
+  const cTravelContingency = params.includeContingency 
+    ? (params.contingencyType === 'percentage' ? cTravelRate * (cContingencyInputVal / 100) : cContingencyInputVal * travelRateMultiplier) 
+    : 0;
+
+  const cTravelTotalAdditions = cTravelPension + cTravelAppyLevy + cTravelContingency;
 
   const travelNIBaseAmount = params.niMode === 'total' ? (cTravelRate + cTravelTotalAdditions) : cTravelRate;
   const cTravelNI = travelNIBaseAmount * cNiMultiplier;
@@ -210,7 +214,7 @@ function calculateContract(params: ContractParams, fiscalRates: FiscalRates) {
   return {
     cRate, cMarginVal, feeType: params.feeType, cEmployerNI, cTotalCharge, cManagementFee,
     cPension, cAppyLevy, cContingency, cTotalAdditions, cSubTravelAmt, cSubOnboardAmt,
-    cTravelRate, cTravelNI, cTravelFeeVal, travelFeeType: params.travelFeeType, cTravelManagementFee, cTravelDayCharge,
+    cTravelRate, cTravelPension, cTravelAppyLevy, cTravelContingency, cTravelNI, cTravelFeeVal, travelFeeType: params.travelFeeType, cTravelManagementFee, cTravelDayCharge,
     nWorkingDays, nTravelDays, travelPayableDays, travelSubDays,
     logisticsBase, logisticsFee, logisticsTotal,
     tripWorkingTotal, tripTravelTotal, tripGrandTotal,
@@ -229,12 +233,10 @@ function calculatePerm(params: PermParams, fiscalRates: FiscalRates, fxRate: num
   const pSalary = params.pCurrency === 'GBP' ? pSalaryInput : (fxRate !== null ? pSalaryInput * fxRate : 0);
   const pFeePct = Math.max(0, parseFloat(params.dbPlacementFee) || 0);
 
-  // Feature: Invoice in Origin Currency
   const pPlacementFee = params.invoiceInOrigin 
     ? pSalaryInput * (pFeePct / 100) 
     : (pFxReady ? pSalary * (pFeePct / 100) : 0);
 
-  // NI is always a UK tax on the GBP equivalent salary
   const pEmployerNI = params.includePermNI ? Math.max(0, (pSalary - fiscalRates.permNIThreshold) * fiscalRates.permNI) : 0;
 
   return { pSalaryInput, pFxReady, pSalary, pFeePct, pPlacementFee, pEmployerNI, pTotalCost: pPlacementFee + (params.invoiceInOrigin ? 0 : pEmployerNI) };
@@ -326,6 +328,7 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
 // ─── 3. Global Zustand Store ──────────────────────────────────────────────────
 
 interface AppState {
+  theme: 'light' | 'dark';
   taxYear: TaxProfile;
   clientName: string;
   candidateName: string;
@@ -397,10 +400,11 @@ interface AppState {
   savedPresets: Record<string, Partial<AppState>>;
   updateField: <K extends keyof AppState>(field: K, value: AppState[K]) => void;
   resetToDefaults: () => void;
+  deletePreset: (name: string) => void;
 }
 
-const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPresets'> = {
-  taxYear: '2025/2026', clientName: '', candidateName: '', cCurrency: 'GBP', cFxDate: new Date().toISOString().slice(0, 10),
+const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPresets' | 'deletePreset'> = {
+  theme: 'light', taxYear: '2025/2026', clientName: '', candidateName: '', cCurrency: 'GBP', cFxDate: new Date().toISOString().slice(0, 10),
   consolidatedRate: '', feeType: 'percentage', margin: '15', crewSize: '1', includePension: false, includeAppyLevy: false,
   includeContingency: false, contingencyType: 'percentage', contingencyValue: '', includeNI: true, niMode: 'base',
   seafarerExempt: false, includeSubsistence: false, subsistenceTravel: '50', subsistenceOnboard: '0', subsistenceInFee: true,
@@ -421,14 +425,17 @@ const useStore = create<AppState>()(
       ...defaultState,
       savedPresets: {},
       updateField: (field, value) => set({ [field]: value }),
-      resetToDefaults: () => set((state) => ({ ...defaultState, savedPresets: state.savedPresets }))
+      resetToDefaults: () => set((state) => ({ ...defaultState, savedPresets: state.savedPresets, theme: state.theme })),
+      deletePreset: (name) => set((state) => {
+        const newPresets = { ...state.savedPresets };
+        delete newPresets[name];
+        return { savedPresets: newPresets };
+      })
     }),
     { 
       name: 'maritime-calculator-store',
-      version: 1, // <--- ADD THIS LINE
+      version: 2, 
       migrate: (persistedState: any, version: number) => {
-        // If the version in the browser doesn't match the version in the code,
-        // it automatically wipes the old broken state and starts fresh!
         return persistedState as AppState;
       }
     }
@@ -520,11 +527,26 @@ function useFxRate(currency: CurrencyCode, baseDate: string) {
 
 // ─── 4. Reusable Sub-components ───────────────────────────────────────────────
 
-const TextInput = ({ value, onChange, placeholder, ariaLabel }: any) => (
+interface TextInputProps {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  ariaLabel?: string;
+}
+const TextInput = ({ value, onChange, placeholder, ariaLabel }: TextInputProps) => (
   <input type="text" value={value} onChange={(e) => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
 );
 
-const NumInput = ({ id, value, onChange, prefix, suffix, placeholder = '0.00', 'aria-label': ariaLabel }: any) => (
+interface NumInputProps {
+  id?: string;
+  value: string | number;
+  onChange: (v: string) => void;
+  prefix?: string;
+  suffix?: string;
+  placeholder?: string;
+  'aria-label'?: string;
+}
+const NumInput = ({ id, value, onChange, prefix, suffix, placeholder = '0.00', 'aria-label': ariaLabel }: NumInputProps) => (
   <div className="relative group flex-1">
     {prefix && <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono pointer-events-none transition-colors group-focus-within:text-primary">{prefix}</span>}
     <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} min="0" className={cn('w-full py-3 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200 tabular-nums text-base font-medium', prefix ? (prefix.length > 1 ? 'pl-16 pr-4' : 'pl-10 pr-4') : suffix ? 'pl-4 pr-10' : 'px-4')} />
@@ -532,7 +554,13 @@ const NumInput = ({ id, value, onChange, prefix, suffix, placeholder = '0.00', '
   </div>
 );
 
-const SegmentedControl = ({ value, onChange, options, ariaLabel }: { value: string, onChange: (v: string) => void, options: {label: string, value: string}[], ariaLabel: string }) => (
+interface SegmentedControlProps {
+  value: string;
+  onChange: (v: string) => void;
+  options: {label: string, value: string}[];
+  ariaLabel: string;
+}
+const SegmentedControl = ({ value, onChange, options, ariaLabel }: SegmentedControlProps) => (
   <div className="flex items-center gap-1 p-1 bg-input/40 border border-input rounded-xl w-full" role="radiogroup" aria-label={ariaLabel}>
     {options.map(opt => (
       <label key={opt.value} className={cn('flex-1 text-center cursor-pointer px-3 py-1.5 rounded-lg text-sm font-bold transition-all duration-300 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary', value === opt.value ? 'bg-primary text-primary-foreground shadow scale-100' : 'text-muted-foreground hover:text-foreground scale-95')}>
@@ -543,13 +571,23 @@ const SegmentedControl = ({ value, onChange, options, ariaLabel }: { value: stri
   </div>
 );
 
-const ActionButton = ({ onClick, icon: Icon, label }: any) => (
+interface ActionButtonProps {
+  onClick: () => void;
+  icon: React.ElementType;
+  label: string;
+}
+const ActionButton = ({ onClick, icon: Icon, label }: ActionButtonProps) => (
   <button onClick={onClick} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary-foreground/10 hover:bg-primary-foreground/20 text-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white print:hidden" title={label} aria-label={label}>
     <Icon className="h-3.5 w-3.5" /><span className="hidden sm:inline">{label}</span>
   </button>
 );
 
-function AnimatedSection({ show, children, className }: { show: boolean, children: React.ReactNode, className?: string }) {
+interface AnimatedSectionProps {
+  show: boolean;
+  children: React.ReactNode;
+  className?: string;
+}
+function AnimatedSection({ show, children, className }: AnimatedSectionProps) {
   return (
     <div className={cn("grid transition-all duration-400 ease-in-out", show ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0 pointer-events-none")}>
       <div className={cn("overflow-hidden", className)}>{children}</div>
@@ -557,7 +595,13 @@ function AnimatedSection({ show, children, className }: { show: boolean, childre
   );
 }
 
-function CollapsibleCard({ title, icon: Icon, children, defaultOpen = true }: any) {
+interface CollapsibleCardProps {
+  title: string;
+  icon: React.ElementType;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}
+function CollapsibleCard({ title, icon: Icon, children, defaultOpen = true }: CollapsibleCardProps) {
   return (
     <details className="group [&_summary::-webkit-details-marker]:hidden bg-card border border-card-border rounded-2xl shadow-sm transition-all overflow-hidden" open={defaultOpen}>
       <summary className="flex items-center gap-3 cursor-pointer p-6 hover:bg-input/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary border-b border-transparent group-open:border-border">
@@ -570,7 +614,10 @@ function CollapsibleCard({ title, icon: Icon, children, defaultOpen = true }: an
   );
 }
 
-const Tooltip = ({ text }: { text: string }) => (
+interface TooltipProps {
+  text: string;
+}
+const Tooltip = ({ text }: TooltipProps) => (
   <div className="group/tooltip relative inline-flex ml-1.5 align-middle cursor-help print:hidden">
     <button type="button" aria-label={text} className="text-muted-foreground hover:text-primary focus-visible:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-full"><Info className="h-3.5 w-3.5" /></button>
     <div role="tooltip" className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/tooltip:block group-focus-within/tooltip:block w-48 p-2.5 bg-foreground text-background text-xs font-medium rounded-lg shadow-xl z-50 text-center pointer-events-none animate-in fade-in zoom-in-95 duration-200">
@@ -586,12 +633,25 @@ export default function CalculatorPage() {
   const bankHolidays = useBankHolidays();
   const [mode, setMode] = useState<'contract' | 'perm' | 'paydays' | 'reference'>('contract');
   const [newPresetName, setNewPresetName] = useState('');
+  const [selectedPreset, setSelectedPreset] = useState('');
   const [subDaysOverrides, setSubDaysOverrides] = useState<Record<number, string>>({});
 
   const s = useStore();
   const activeFiscalRates = FISCAL_PROFILES[s.taxYear];
   const cFx = useFxRate(s.cCurrency, s.cFxDate);
   const pFx = useFxRate(s.pCurrency, s.pFxDate);
+
+  // Sync Theme to HTML Document
+  useEffect(() => {
+    const root = window.document.documentElement;
+    if (s.theme === 'dark') {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+  }, [s.theme]);
+
+  const toggleTheme = () => s.updateField('theme', s.theme === 'light' ? 'dark' : 'light');
 
   // Debounced inputs for mathematical performance
   const dbConsolidatedRate = useDebounce(s.consolidatedRate, 300);
@@ -630,6 +690,20 @@ export default function CalculatorPage() {
     s.updateField('savedPresets', { ...s.savedPresets, [newPresetName]: useStore.getState() });
     setNewPresetName('');
     showToast(`Preset "${newPresetName}" saved!`);
+  };
+
+  const loadPreset = (val: string) => {
+    setSelectedPreset(val);
+    if (val && s.savedPresets[val]) {
+       useStore.setState({ ...s.savedPresets[val] as AppState, theme: s.theme, savedPresets: s.savedPresets });
+    }
+  };
+
+  const deleteSelectedPreset = () => {
+    if (!selectedPreset) return;
+    s.deletePreset(selectedPreset);
+    setSelectedPreset('');
+    showToast(`Preset "${selectedPreset}" deleted`);
   };
 
   const contract = useMemo(() => calculateContract({ ...s, dbConsolidatedRate, dbMargin, dbTravelFee, dbContingencyValue, dbSubTravel, dbSubOnboard, dbWorkingDays, dbTravelDays, dbMobTravel, dbMobVisas, dbMobAgent }, activeFiscalRates), 
@@ -856,10 +930,10 @@ export default function CalculatorPage() {
 
   // ─── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-[100dvh] bg-background py-10 px-4 sm:px-6 md:px-8 flex flex-col items-center pb-28 md:pb-10">
+    <div className="min-h-[100dvh] bg-background py-10 px-4 sm:px-6 md:px-8 flex flex-col items-center pb-28 md:pb-10 transition-colors duration-300">
       <ToastContainer />
       <div className="w-full max-w-5xl">
-        <header className="mb-10 flex flex-col md:flex-row md:items-start justify-between gap-4 print:hidden">
+        <header className="mb-8 flex flex-col md:flex-row md:items-start justify-between gap-4 print:hidden">
           <div>
             <Logo />
             <h1 className="text-3xl font-bold tracking-tight text-foreground flex items-center gap-3">Maritime Fee Calculator</h1>
@@ -868,24 +942,46 @@ export default function CalculatorPage() {
 
           <div className="flex flex-col sm:items-end gap-3">
              <div className="flex items-center gap-2">
+               <button onClick={toggleTheme} className="p-2 bg-input/20 border border-input/40 rounded-lg hover:bg-input/40 transition-colors text-foreground flex items-center justify-center h-9 w-9 mr-2" title="Toggle Theme" aria-label="Toggle Theme">
+                 {s.theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+               </button>
                <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Tax Year</label>
                <select className="px-3 py-1.5 bg-input/20 border border-input rounded-lg text-sm font-bold focus:ring-2 focus:ring-primary focus:outline-none" value={s.taxYear} onChange={(e) => s.updateField('taxYear', e.target.value as TaxProfile)} aria-label="Select Tax Year">
                  {Object.keys(FISCAL_PROFILES).map(year => <option key={year} value={year}>{year}</option>)}
                </select>
              </div>
             <div className="flex flex-wrap items-center gap-2 bg-input/20 p-2 rounded-xl border border-input/40">
-               <select className="px-3 py-2 bg-background border border-input rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none" onChange={(e) => { if (e.target.value) { useStore.setState(s.savedPresets[e.target.value]); } e.target.value = ""; }}>
-                 <option value="">Load Preset...</option>
-                 {Object.keys(s.savedPresets).map(p => <option key={p} value={p}>{p}</option>)}
-               </select>
-               <div className="flex gap-1 items-center">
-                 <input type="text" placeholder="Preset name" value={newPresetName} onChange={(e)=>setNewPresetName(e.target.value)} className="px-3 py-2 bg-background border border-input rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none w-32" />
+               <div className="flex items-center gap-1">
+                 <select className="px-3 py-2 bg-background border border-input rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none" value={selectedPreset} onChange={(e) => loadPreset(e.target.value)}>
+                   <option value="">Load Preset...</option>
+                   {Object.keys(s.savedPresets).map(p => <option key={p} value={p}>{p}</option>)}
+                 </select>
+                 {selectedPreset && (
+                   <button onClick={deleteSelectedPreset} className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20 transition-colors" title="Delete Active Preset">
+                     <Trash2 className="h-4 w-4" />
+                   </button>
+                 )}
+               </div>
+               <div className="flex gap-1 items-center border-l border-input/40 pl-2 ml-1">
+                 <input type="text" placeholder="Save as..." value={newPresetName} onChange={(e)=>setNewPresetName(e.target.value)} className="px-3 py-2 bg-background border border-input rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none w-28 sm:w-32" />
                  <button onClick={savePreset} className="p-2 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity" title="Save Preset"><Save className="h-4 w-4" /></button>
                </div>
             </div>
             <button onClick={reset} className="flex items-center gap-2 text-sm font-semibold text-muted-foreground hover:text-foreground px-4 py-2 hover:bg-input/50 rounded-lg"><RotateCcw className="h-4 w-4" />Reset Values</button>
           </div>
         </header>
+
+        {/* Global Details Header */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8 bg-card border border-card-border p-4 rounded-xl shadow-sm print:shadow-none print:border-none print:p-0">
+          <div className="space-y-1">
+            <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider pl-1 print:hidden">Client Name</label>
+            <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={(e) => s.updateField('clientName', e.target.value)} className="w-full bg-transparent border-b border-border text-foreground px-1 py-1 focus:outline-none focus:border-primary transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider pl-1 sm:text-right block print:hidden">Candidate Name</label>
+            <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={(e) => s.updateField('candidateName', e.target.value)} className="w-full bg-transparent border-b border-border text-foreground px-1 py-1 focus:outline-none focus:border-primary transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg" />
+          </div>
+        </div>
 
         <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)} className="w-full">
           <TabsList className="grid w-full max-w-3xl grid-cols-4 mb-8 bg-input/40 p-1 rounded-xl print:hidden">
@@ -1050,11 +1146,6 @@ export default function CalculatorPage() {
                 ) : null}
 
                 <div className="p-8 md:p-10 flex-grow relative z-0">
-                  <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4 print:mb-6">
-                    <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={(e) => s.updateField('clientName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
-                    <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={(e) => s.updateField('candidateName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
-                  </div>
-
                   <div className="flex items-center justify-between gap-4 mb-8">
                     <h2 className="text-xl font-bold">{s.crewSize !== '1' ? `Crew Charge Breakdown (${s.crewSize} Members)` : 'Charge Rate Breakdown'}</h2>
                     <div className="flex items-center gap-2">
@@ -1105,8 +1196,9 @@ export default function CalculatorPage() {
                     <h3 className="text-sm font-bold uppercase tracking-widest text-primary-foreground/60 mb-4">Single Travel Day Reference {s.crewSize !== '1' ? '(Total Crew)' : ''}</h3>
                     <div className="space-y-2.5">
                       <LineItem label={`Consolidated Rate (×${s.travelDayFull ? '1' : '0.5'})`} value={contract.cTravelRate * contract.crewSize} currency={s.cCurrency} />
-                      {s.includePension && <LineItem label="Pension" value={(contract.cTravelRate * activeFiscalRates.pension) * contract.crewSize} currency={s.cCurrency} />}
-                      {s.includeAppyLevy && <LineItem label="Apprenticeship Levy" value={(contract.cTravelRate * activeFiscalRates.apprenticeshipLevy) * contract.crewSize} currency={s.cCurrency} />}
+                      {s.includePension && <LineItem label="Pension" value={contract.cTravelPension * contract.crewSize} currency={s.cCurrency} />}
+                      {s.includeAppyLevy && <LineItem label="Apprenticeship Levy" value={contract.cTravelAppyLevy * contract.crewSize} currency={s.cCurrency} />}
+                      {s.includeContingency && <LineItem label="Contingency" value={contract.cTravelContingency * contract.crewSize} currency={s.cCurrency} />}
                       {s.includeNI && !s.seafarerExempt && <LineItem label="Employers NIC" value={contract.cTravelNI * contract.crewSize} currency={s.cCurrency} />}
                       {s.includeSubsistence && contract.cSubTravelAmt > 0 && <LineItem label="Travel Subsistence (100%)" value={contract.cSubTravelAmt * contract.crewSize} currency={s.cCurrency} />}
                       <LineItem label={`Management Fee`} value={contract.cTravelManagementFee * contract.crewSize} currency={s.cCurrency} />
@@ -1232,7 +1324,6 @@ export default function CalculatorPage() {
 
                     <div className="flex justify-between border-t border-border/60 mt-4 pt-4"><label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includePermNI', !s.includePermNI)}>Include Employer's NI</label><Switch checked={s.includePermNI} onCheckedChange={(v: boolean) => s.updateField('includePermNI', v)} /></div>
                  </CollapsibleCard>
-                 <AssumptionsAccordion fiscalRates={activeFiscalRates} />
                </div>
 
                <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
@@ -1249,11 +1340,6 @@ export default function CalculatorPage() {
                   ) : null}
 
                   <div className="p-8 md:p-10 flex-grow relative z-0">
-                    <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4 print:mb-6">
-                      <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={(e) => s.updateField('clientName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
-                      <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={(e) => s.updateField('candidateName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
-                    </div>
-
                     <div className="flex items-center justify-between gap-4 mb-8">
                       <h2 className="text-xl font-bold">Permanent Invoice Breakdown</h2>
                       <div className="flex gap-2">
@@ -1357,16 +1443,10 @@ export default function CalculatorPage() {
                     </AnimatedSection>
                   </div>
                 </div>
-                <AssumptionsAccordion fiscalRates={activeFiscalRates} />
               </div>
 
               <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
                 <div className="p-8 md:p-10 flex-grow relative z-0">
-
-                  <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4 print:mb-6">
-                    <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={(e) => s.updateField('clientName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
-                    <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={(e) => s.updateField('candidateName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
-                  </div>
 
                   <div className="flex items-center justify-between gap-4 mb-8">
                     <div className="flex items-center gap-3">
@@ -1647,6 +1727,11 @@ export default function CalculatorPage() {
             </div>
           </TabsContent>
         </Tabs>
+
+        {/* Global Assumptions Accordion */}
+        <div className="mt-8">
+          <AssumptionsAccordion maritime={mode === 'contract'} fiscalRates={activeFiscalRates} />
+        </div>
       </div>
     </div>
   );
@@ -1654,7 +1739,13 @@ export default function CalculatorPage() {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-const LineItem = React.memo(function LineItem({ label, value, isBold = false, currency = 'GBP' }: any) {
+interface LineItemProps {
+  label: string;
+  value: number;
+  isBold?: boolean;
+  currency?: string;
+}
+const LineItem = React.memo(function LineItem({ label, value, isBold = false, currency = 'GBP' }: LineItemProps) {
   return (
     <div className={cn('flex items-center justify-between py-1 group', isBold ? 'text-white font-bold print:text-black' : 'text-primary-foreground/80 hover:text-white transition-colors print:text-gray-700')}>
       <span className="text-sm font-medium">{label}</span>
@@ -1663,7 +1754,14 @@ const LineItem = React.memo(function LineItem({ label, value, isBold = false, cu
   );
 });
 
-const ProjectionCard = React.memo(function ProjectionCard({ label, days, charge, fee, currency = 'GBP' }: { label: string; days: number; charge: number; fee: number; currency?: string }) {
+interface ProjectionCardProps {
+  label: string;
+  days: number;
+  charge: number;
+  fee: number;
+  currency?: string;
+}
+const ProjectionCard = React.memo(function ProjectionCard({ label, days, charge, fee, currency = 'GBP' }: ProjectionCardProps) {
   return (
     <div className="bg-primary-foreground/5 p-5 rounded-xl hover:bg-primary-foreground/10 transition-colors print:border print:border-gray-200 print:bg-white">
       <div className="text-sm font-bold text-white mb-4 flex items-center justify-between border-b border-primary-foreground/10 pb-2 print:text-black">
@@ -1684,7 +1782,11 @@ const ProjectionCard = React.memo(function ProjectionCard({ label, days, charge,
   );
 });
 
-function AssumptionsAccordion({ maritime = false, fiscalRates }: { maritime?: boolean, fiscalRates: any }) {
+interface AssumptionsAccordionProps {
+  maritime?: boolean;
+  fiscalRates: FiscalRates;
+}
+function AssumptionsAccordion({ maritime = false, fiscalRates }: AssumptionsAccordionProps) {
   return (
     <details className="group [&_summary::-webkit-details-marker]:hidden bg-card border border-card-border rounded-2xl shadow-sm transition-all overflow-hidden print:hidden">
       <summary className="flex items-center justify-between cursor-pointer font-bold text-sm p-6 hover:bg-input/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
