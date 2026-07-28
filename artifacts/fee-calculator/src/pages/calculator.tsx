@@ -433,11 +433,8 @@ const useStore = create<AppState>()(
       })
     }),
     { 
-      name: 'maritime-calculator-store',
-      version: 2, 
-      migrate: (persistedState: any, version: number) => {
-        return persistedState as AppState;
-      }
+      // CHANGING THIS NAME CREATES A BRAND NEW CACHE FOR EVERYONE
+      name: 'maritime-calc-v3', 
     }
   )
 );
