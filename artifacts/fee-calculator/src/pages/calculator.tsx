@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { PieChart, Pie, Cell, Tooltip as ChartTooltip, ResponsiveContainer } from 'recharts';
@@ -187,7 +187,6 @@ function calculateContract(params: ContractParams, fiscalRates: FiscalRates) {
     : 0;
 
   const cTravelTotalAdditions = cTravelPension + cTravelAppyLevy + cTravelContingency;
-
   const travelNIBaseAmount = params.niMode === 'total' ? (cTravelRate + cTravelTotalAdditions) : cTravelRate;
   const cTravelNI = travelNIBaseAmount * cNiMultiplier;
   const cTravelFeeBaseRef = cTravelRate + cTravelTotalAdditions + cTravelNI + (params.subsistenceInFee ? cSubTravelAmt : 0);
@@ -378,7 +377,6 @@ interface AppState {
   pdIncludePay: boolean;
   pdDayRate: string;
   pdAdvance: string;
-  // Reference / Appraisal State
   refSeafarerName: string;
   refDiscipline: string;
   refCompany: string;
@@ -413,7 +411,6 @@ const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPre
   pCurrency: 'GBP', invoiceInOrigin: false, pFxDate: new Date().toISOString().slice(0, 10), pdPayrollType: 'monthly',
   pdStartDate: '', pdStartMode: 'full', pdStartCustomVal: '0.5', pdFinishDate: '', pdFinishMode: 'full', pdFinishCustomVal: '0.5',
   pdIncludeSubsistence: false, pdSubsistenceRate: '', pdIncludePay: false, pdDayRate: '', pdAdvance: '',
-  // Default Reference State
   refSeafarerName: '', refDiscipline: '', refCompany: '', refVessel: '', refDates: '', refCompetence: '',
   refFlexibility: '', refInitiative: '', refSafety: '', refSecurity: '', refTimeKeeping: '',
   refCommunication: '', refRelationships: '', refOverall: '', refDrugsPolicy: '', refReHire: '', refComments: ''
@@ -425,16 +422,18 @@ const useStore = create<AppState>()(
       ...defaultState,
       savedPresets: {},
       updateField: (field, value) => set({ [field]: value }),
-      resetToDefaults: () => set((state) => ({ ...defaultState, savedPresets: state.savedPresets, theme: state.theme })),
+      resetToDefaults: () => set((state) => ({ ...defaultState, savedPresets: state.savedPresets || {}, theme: state.theme || 'light' })),
       deletePreset: (name) => set((state) => {
-        const newPresets = { ...state.savedPresets };
+        const newPresets = { ...(state.savedPresets || {}) };
         delete newPresets[name];
         return { savedPresets: newPresets };
       })
     }),
     { 
-      // CHANGING THIS NAME CREATES A BRAND NEW CACHE FOR EVERYONE
-      name: 'maritime-calc-v3', 
+      name: 'maritime-hq-v1', // BRAND NEW DB VAULT TO PREVENT CACHE CRASHES
+      merge: (persistedState: any, currentState) => {
+        return { ...currentState, ...persistedState, savedPresets: persistedState?.savedPresets || {} };
+      }
     }
   )
 );
@@ -626,6 +625,20 @@ const Tooltip = ({ text }: TooltipProps) => (
 // ─── 5. Main Application Component ────────────────────────────────────────────
 
 export default function CalculatorPage() {
+  const s = useStore();
+
+  // 🚨 EMERGENCY FAILSAFE: If browser cache is corrupted, forcefully reset it
+  useEffect(() => {
+    if (!s || !s.updateField || !s.taxYear || !FISCAL_PROFILES[s.taxYear]) {
+      console.error("Corrupted state detected. Resetting to defaults.");
+      localStorage.removeItem('maritime-hq-v1');
+      window.location.reload();
+    }
+  }, [s]);
+
+  // Prevent render crash while reloading
+  if (!s || !s.updateField || !s.taxYear || !FISCAL_PROFILES[s.taxYear]) return null;
+
   const { showToast, showUndoToast, ToastContainer } = useToast();
   const bankHolidays = useBankHolidays();
   const [mode, setMode] = useState<'contract' | 'perm' | 'paydays' | 'reference'>('contract');
@@ -633,7 +646,6 @@ export default function CalculatorPage() {
   const [selectedPreset, setSelectedPreset] = useState('');
   const [subDaysOverrides, setSubDaysOverrides] = useState<Record<number, string>>({});
 
-  const s = useStore();
   const activeFiscalRates = FISCAL_PROFILES[s.taxYear];
   const cFx = useFxRate(s.cCurrency, s.cFxDate);
   const pFx = useFxRate(s.pCurrency, s.pFxDate);
@@ -684,15 +696,21 @@ export default function CalculatorPage() {
 
   const savePreset = () => {
     if (!newPresetName.trim()) return showToast('Please enter a preset name');
-    s.updateField('savedPresets', { ...s.savedPresets, [newPresetName]: useStore.getState() });
+
+    // Safely exclude functions when saving state to prevent overwriting them later
+    const stateToSave = Object.fromEntries(
+      Object.entries(useStore.getState()).filter(([_, value]) => typeof value !== 'function')
+    ) as Partial<AppState>;
+
+    s.updateField('savedPresets', { ...(s.savedPresets || {}), [newPresetName]: stateToSave });
     setNewPresetName('');
     showToast(`Preset "${newPresetName}" saved!`);
   };
 
   const loadPreset = (val: string) => {
     setSelectedPreset(val);
-    if (val && s.savedPresets[val]) {
-       useStore.setState({ ...s.savedPresets[val] as AppState, theme: s.theme, savedPresets: s.savedPresets });
+    if (val && s.savedPresets && s.savedPresets[val]) {
+       useStore.setState(s.savedPresets[val] as Partial<AppState>);
     }
   };
 
