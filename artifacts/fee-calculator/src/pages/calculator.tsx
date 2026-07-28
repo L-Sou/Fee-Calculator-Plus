@@ -394,6 +394,7 @@ interface AppState {
   refDrugsPolicy: string;
   refReHire: string;
   refComments: string;
+  displayCurrency: 'original' | 'gbp';
 
   savedPresets: Record<string, Partial<AppState>>;
   updateField: <K extends keyof AppState>(field: K, value: AppState[K]) => void;
@@ -413,7 +414,7 @@ const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPre
   pdIncludeSubsistence: false, pdSubsistenceRate: '', pdIncludePay: false, pdDayRate: '', pdAdvance: '',
   refSeafarerName: '', refDiscipline: '', refCompany: '', refVessel: '', refDates: '', refCompetence: '',
   refFlexibility: '', refInitiative: '', refSafety: '', refSecurity: '', refTimeKeeping: '',
-  refCommunication: '', refRelationships: '', refOverall: '', refDrugsPolicy: '', refReHire: '', refComments: ''
+  refCommunication: '', refRelationships: '', refOverall: '', refDrugsPolicy: '', refReHire: '', refComments: '', displayCurrency: 'original'
 };
 
 const useStore = create<AppState>()(
@@ -430,7 +431,7 @@ const useStore = create<AppState>()(
       })
     }),
     { 
-      name: 'maritime-hq-v1', // BRAND NEW DB VAULT TO PREVENT CACHE CRASHES
+      name: 'maritime-hq-v5', 
       merge: (persistedState: any, currentState) => {
         return { ...currentState, ...persistedState, savedPresets: persistedState?.savedPresets || {} };
       }
@@ -465,11 +466,11 @@ function useToast() {
   const ToastContainer = () => (
     <div className="fixed bottom-20 md:bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none print:hidden">
       {toasts.map(t => (
-        <div key={t.id} className="animate-in slide-in-from-bottom-2 fade-in duration-300 bg-foreground text-background px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 font-medium text-sm pointer-events-auto">
-          <div className="p-1 bg-background/20 rounded-full"><Check className="h-3.5 w-3.5 text-background" /></div>
+        <div key={t.id} className="animate-in slide-in-from-bottom-2 fade-in duration-300 bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 font-medium text-sm pointer-events-auto">
+          <div className="p-1 bg-white/20 dark:bg-black/20 rounded-full"><Check className="h-3.5 w-3.5 text-current" /></div>
           {t.message}
           {t.onAction && (
-            <button onClick={() => { t.onAction?.(); setToasts(prev => prev.filter(x => x.id !== t.id)); }} className="ml-1 underline font-bold text-chart-1 hover:text-white transition-colors">
+            <button onClick={() => { t.onAction?.(); setToasts(prev => prev.filter(x => x.id !== t.id)); }} className="ml-1 underline font-bold text-emerald-400 dark:text-emerald-600 hover:opacity-85 transition-opacity">
               {t.actionLabel}
             </button>
           )}
@@ -530,7 +531,7 @@ interface TextInputProps {
   ariaLabel?: string;
 }
 const TextInput = ({ value, onChange, placeholder, ariaLabel }: TextInputProps) => (
-  <input type="text" value={value} onChange={(e) => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
+  <input type="text" value={value} onChange={(e) => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} className="w-full px-4 py-2.5 bg-input/40 border border-input text-foreground dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium placeholder:text-muted-foreground" />
 );
 
 interface NumInputProps {
@@ -544,9 +545,9 @@ interface NumInputProps {
 }
 const NumInput = ({ id, value, onChange, prefix, suffix, placeholder = '0.00', 'aria-label': ariaLabel }: NumInputProps) => (
   <div className="relative group flex-1">
-    {prefix && <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono pointer-events-none transition-colors group-focus-within:text-primary">{prefix}</span>}
-    <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} min="0" className={cn('w-full py-3 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200 tabular-nums text-base font-medium', prefix ? (prefix.length > 1 ? 'pl-16 pr-4' : 'pl-10 pr-4') : suffix ? 'pl-4 pr-10' : 'px-4')} />
-    {suffix && <span className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono transition-colors group-focus-within:text-primary">{suffix}</span>}
+    {prefix && <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground dark:text-gray-400 font-mono pointer-events-none transition-colors group-focus-within:text-primary">{prefix}</span>}
+    <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} min="0" className={cn('w-full py-3 bg-input/40 border border-input text-foreground dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200 tabular-nums text-base font-medium placeholder:text-muted-foreground', prefix ? (prefix.length > 1 ? 'pl-16 pr-4' : 'pl-10 pr-4') : suffix ? 'pl-4 pr-10' : 'px-4')} />
+    {suffix && <span className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground dark:text-gray-400 font-mono transition-colors group-focus-within:text-primary">{suffix}</span>}
   </div>
 );
 
@@ -555,11 +556,12 @@ interface SegmentedControlProps {
   onChange: (v: string) => void;
   options: {label: string, value: string}[];
   ariaLabel: string;
+  variant?: 'light' | 'default';
 }
-const SegmentedControl = ({ value, onChange, options, ariaLabel }: SegmentedControlProps) => (
-  <div className="flex items-center gap-1 p-1 bg-input/40 border border-input rounded-xl w-full" role="radiogroup" aria-label={ariaLabel}>
+const SegmentedControl = ({ value, onChange, options, ariaLabel, variant = 'default' }: SegmentedControlProps) => (
+  <div className={cn("flex items-center gap-1 p-1 border rounded-xl w-full", variant === 'light' ? "bg-white/10 border-white/20 text-white" : "bg-input/40 border-input text-foreground dark:text-white")} role="radiogroup" aria-label={ariaLabel}>
     {options.map(opt => (
-      <label key={opt.value} className={cn('flex-1 text-center cursor-pointer px-3 py-1.5 rounded-lg text-sm font-bold transition-all duration-300 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary', value === opt.value ? 'bg-primary text-primary-foreground shadow scale-100' : 'text-muted-foreground hover:text-foreground scale-95')}>
+      <label key={opt.value} className={cn('flex-1 text-center cursor-pointer px-3 py-1.5 rounded-lg text-sm font-bold transition-all duration-300 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary', value === opt.value ? (variant === 'light' ? 'bg-white text-slate-900 shadow scale-100' : 'bg-primary text-primary-foreground shadow scale-100') : (variant === 'light' ? 'text-white/70 hover:text-white scale-95' : 'text-muted-foreground dark:text-gray-300 hover:text-foreground dark:hover:text-white scale-95'))}>
         <input type="radio" className="sr-only" value={opt.value} checked={value === opt.value} onChange={(e) => onChange(e.target.value)} />
         {opt.label}
       </label>
@@ -573,7 +575,7 @@ interface ActionButtonProps {
   label: string;
 }
 const ActionButton = ({ onClick, icon: Icon, label }: ActionButtonProps) => (
-  <button onClick={onClick} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary-foreground/10 hover:bg-primary-foreground/20 text-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white print:hidden" title={label} aria-label={label}>
+  <button onClick={onClick} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white/10 hover:bg-white/20 text-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white print:hidden" title={label} aria-label={label}>
     <Icon className="h-3.5 w-3.5" /><span className="hidden sm:inline">{label}</span>
   </button>
 );
@@ -599,13 +601,13 @@ interface CollapsibleCardProps {
 }
 function CollapsibleCard({ title, icon: Icon, children, defaultOpen = true }: CollapsibleCardProps) {
   return (
-    <details className="group [&_summary::-webkit-details-marker]:hidden bg-card border border-card-border rounded-2xl shadow-sm transition-all overflow-hidden" open={defaultOpen}>
+    <details className="group [&_summary::-webkit-details-marker]:hidden bg-card text-card-foreground border border-card-border rounded-2xl shadow-sm transition-all overflow-hidden" open={defaultOpen}>
       <summary className="flex items-center gap-3 cursor-pointer p-6 hover:bg-input/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary border-b border-transparent group-open:border-border">
         <div className="p-2 bg-primary/10 rounded-lg text-primary"><Icon className="h-5 w-5" /></div>
-        <div className="flex-1 font-bold text-lg">{title}</div>
+        <div className="flex-1 font-bold text-lg text-foreground dark:text-white">{title}</div>
         <ChevronDown className="h-5 w-5 text-muted-foreground group-open:rotate-180 transition-transform duration-300" />
       </summary>
-      <div className="p-6 pt-2 animate-in fade-in duration-300">{children}</div>
+      <div className="p-6 pt-2 animate-in fade-in duration-300 text-foreground dark:text-gray-200">{children}</div>
     </details>
   );
 }
@@ -631,7 +633,7 @@ export default function CalculatorPage() {
   useEffect(() => {
     if (!s || !s.updateField || !s.taxYear || !FISCAL_PROFILES[s.taxYear]) {
       console.error("Corrupted state detected. Resetting to defaults.");
-      localStorage.removeItem('maritime-hq-v1');
+      localStorage.removeItem('maritime-hq-v5');
       window.location.reload();
     }
   }, [s]);
@@ -816,10 +818,11 @@ export default function CalculatorPage() {
 
     text += `Management Fee (${contract.feeType === 'percentage' ? `${contract.cMarginVal}%` : 'Fixed'}): ${formatCurrencyIn(contract.cManagementFee, s.cCurrency)}\n`;
     text += `-----------------------------------\n`;
-    text += `Total Charge Rate (Onboard): ${formatCurrencyIn(contract.cTotalCharge, s.cCurrency)}`;
 
-    if (s.cCurrency !== 'GBP' && cFx.rate) {
-       text += `\nConverted Equivalent (GBP): ${formatCurrencyIn(contract.cTotalCharge * cFx.rate, 'GBP')} (@ 1 ${s.cCurrency} = ${cFx.rate.toFixed(4)} GBP)`;
+    if (s.displayCurrency === 'gbp' && s.cCurrency !== 'GBP' && cFx.rate) {
+      text += `Total Charge Rate (GBP Equivalent): ${formatCurrencyIn(contract.cTotalCharge * s.crewSize * cFx.rate, 'GBP')}`;
+    } else {
+      text += `Total Charge Rate (Onboard): ${formatCurrencyIn(contract.cTotalCharge * s.crewSize, s.cCurrency)}`;
     }
 
     copyText(text).then(ok => showToast(ok ? 'Charge breakdown copied' : 'Clipboard access denied. Please select and copy manually.'));
@@ -827,14 +830,15 @@ export default function CalculatorPage() {
 
   const copyTripSummary = () => {
     let text = `Hitch & Crew Change Invoice Summary\n-----------------------------------\n`;
-    text += `Hitch Days (${contract.nWorkingDays}): ${formatCurrencyIn(contract.tripWorkingTotal, s.cCurrency)}\n`;
-    text += `Travel Days (${contract.nTravelDays}): ${formatCurrencyIn(contract.tripTravelTotal, s.cCurrency)}\n`;
-    if (contract.logisticsTotal > 0) text += `Travel & Logistics Costs: ${formatCurrencyIn(contract.logisticsTotal, s.cCurrency)}\n`;
+    text += `Hitch Days (${contract.nWorkingDays}): ${formatCurrencyIn(contract.tripWorkingTotal * s.crewSize, s.cCurrency)}\n`;
+    text += `Travel Days (${contract.nTravelDays}): ${formatCurrencyIn(contract.tripTravelTotal * s.crewSize, s.cCurrency)}\n`;
+    if (contract.crewLogisticsTotal > 0) text += `Travel & Logistics Costs: ${formatCurrencyIn(contract.crewLogisticsTotal, s.cCurrency)}\n`;
     text += `-----------------------------------\n`;
-    text += `Total Hitch Invoice: ${formatCurrencyIn(contract.tripGrandTotal, s.cCurrency)}`;
 
-    if (s.cCurrency !== 'GBP' && cFx.rate) {
-       text += `\nConverted Equivalent (GBP): ${formatCurrencyIn(contract.tripGrandTotal * cFx.rate, 'GBP')} (@ 1 ${s.cCurrency} = ${cFx.rate.toFixed(4)} GBP)`;
+    if (s.displayCurrency === 'gbp' && s.cCurrency !== 'GBP' && cFx.rate) {
+      text += `Total Hitch Invoice (GBP Equivalent): ${formatCurrencyIn(contract.crewTripGrandTotal * cFx.rate, 'GBP')}`;
+    } else {
+      text += `Total Hitch Invoice: ${formatCurrencyIn(contract.crewTripGrandTotal, s.cCurrency)}`;
     }
 
     copyText(text).then(ok => showToast(ok ? 'Hitch summary copied' : 'Clipboard access denied. Please select and copy manually.'));
@@ -945,31 +949,31 @@ export default function CalculatorPage() {
 
   // ─── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-[100dvh] bg-background py-10 px-4 sm:px-6 md:px-8 flex flex-col items-center pb-28 md:pb-10 transition-colors duration-300">
+    <div className="min-h-[100dvh] bg-background text-foreground dark:text-gray-100 py-10 px-4 sm:px-6 md:px-8 flex flex-col items-center pb-28 md:pb-10 transition-colors duration-300">
       <ToastContainer />
       <div className="w-full max-w-5xl">
         <header className="mb-8 flex flex-col md:flex-row md:items-start justify-between gap-4 print:hidden">
           <div>
             <Logo />
-            <h1 className="text-3xl font-bold tracking-tight text-foreground flex items-center gap-3">Maritime Fee Calculator</h1>
-            <p className="mt-2 text-muted-foreground font-medium">Specialised toolkit for maritime quoting and scheduling.</p>
+            <h1 className="text-3xl font-bold tracking-tight text-foreground dark:text-white flex items-center gap-3">Maritime Fee Calculator</h1>
+            <p className="mt-2 text-muted-foreground dark:text-gray-400 font-medium">Specialised toolkit for maritime quoting and scheduling.</p>
           </div>
 
           <div className="flex flex-col sm:items-end gap-3">
              <div className="flex items-center gap-2">
-               <button onClick={toggleTheme} className="p-2 bg-input/20 border border-input/40 rounded-lg hover:bg-input/40 transition-colors text-foreground flex items-center justify-center h-9 w-9 mr-2" title="Toggle Theme" aria-label="Toggle Theme">
-                 {s.theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+               <button onClick={toggleTheme} className="p-2 bg-input/20 border border-input/40 rounded-lg hover:bg-input/40 transition-colors text-foreground dark:text-white flex items-center justify-center h-9 w-9 mr-2" title="Toggle Theme" aria-label="Toggle Theme">
+                 {s.theme === 'dark' ? <Sun className="h-4 w-4 text-amber-400" /> : <Moon className="h-4 w-4 text-slate-700" />}
                </button>
-               <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Tax Year</label>
-               <select className="px-3 py-1.5 bg-input/20 border border-input rounded-lg text-sm font-bold focus:ring-2 focus:ring-primary focus:outline-none" value={s.taxYear} onChange={(e) => s.updateField('taxYear', e.target.value as TaxProfile)} aria-label="Select Tax Year">
-                 {Object.keys(FISCAL_PROFILES).map(year => <option key={year} value={year}>{year}</option>)}
+               <label className="text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-widest">Tax Year</label>
+               <select className="px-3 py-1.5 bg-input/20 border border-input text-foreground dark:text-white rounded-lg text-sm font-bold focus:ring-2 focus:ring-primary focus:outline-none" value={s.taxYear} onChange={(e) => s.updateField('taxYear', e.target.value as TaxProfile)} aria-label="Select Tax Year">
+                 {Object.keys(FISCAL_PROFILES).map(year => <option key={year} value={year} className="bg-background text-foreground dark:bg-slate-900 dark:text-white">{year}</option>)}
                </select>
              </div>
-            <div className="flex flex-wrap items-center gap-2 bg-input/20 p-2 rounded-xl border border-input/40">
+            <div className="flex flex-wrap items-center gap-2 bg-input/25 p-2 rounded-xl border border-input/40">
                <div className="flex items-center gap-1">
-                 <select className="px-3 py-2 bg-background border border-input rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none" value={selectedPreset} onChange={(e) => loadPreset(e.target.value)}>
-                   <option value="">Load Preset...</option>
-                   {Object.keys(s.savedPresets).map(p => <option key={p} value={p}>{p}</option>)}
+                 <select className="px-3 py-2 bg-background border border-input text-foreground dark:text-white rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none" value={selectedPreset} onChange={(e) => loadPreset(e.target.value)} aria-label="Load Preset">
+                   <option value="" className="bg-background text-foreground dark:bg-slate-900 dark:text-white">Load Preset...</option>
+                   {Object.keys(s.savedPresets).map(p => <option key={p} value={p} className="bg-background text-foreground dark:bg-slate-900 dark:text-white">{p}</option>)}
                  </select>
                  {selectedPreset && (
                    <button onClick={deleteSelectedPreset} className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20 transition-colors" title="Delete Active Preset">
@@ -978,32 +982,32 @@ export default function CalculatorPage() {
                  )}
                </div>
                <div className="flex gap-1 items-center border-l border-input/40 pl-2 ml-1">
-                 <input type="text" placeholder="Save as..." value={newPresetName} onChange={(e)=>setNewPresetName(e.target.value)} className="px-3 py-2 bg-background border border-input rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none w-28 sm:w-32" />
+                 <input type="text" placeholder="Save as..." value={newPresetName} onChange={(e)=>setNewPresetName(e.target.value)} className="px-3 py-2 bg-background border border-input text-foreground dark:text-white rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none w-28 sm:w-32 placeholder:text-muted-foreground" />
                  <button onClick={savePreset} className="p-2 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity" title="Save Preset"><Save className="h-4 w-4" /></button>
                </div>
             </div>
-            <button onClick={reset} className="flex items-center gap-2 text-sm font-semibold text-muted-foreground hover:text-foreground px-4 py-2 hover:bg-input/50 rounded-lg"><RotateCcw className="h-4 w-4" />Reset Values</button>
+            <button onClick={reset} className="flex items-center gap-2 text-sm font-semibold text-muted-foreground dark:text-gray-400 hover:text-foreground dark:hover:text-white px-4 py-2 hover:bg-input/50 rounded-lg"><RotateCcw className="h-4 w-4" />Reset Values</button>
           </div>
         </header>
 
         {/* Global Details Header */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8 bg-card border border-card-border p-4 rounded-xl shadow-sm print:shadow-none print:border-none print:p-0">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8 bg-card text-card-foreground border border-card-border p-4 rounded-xl shadow-sm print:shadow-none print:border-none print:p-0">
           <div className="space-y-1">
-            <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider pl-1 print:hidden">Client Name</label>
-            <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={(e) => s.updateField('clientName', e.target.value)} className="w-full bg-transparent border-b border-border text-foreground px-1 py-1 focus:outline-none focus:border-primary transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
+            <label className="text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wider pl-1 print:hidden">Client Name</label>
+            <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={(e) => s.updateField('clientName', e.target.value)} className="w-full bg-transparent border-b border-border text-foreground dark:text-white px-1 py-1 focus:outline-none focus:border-primary transition-colors placeholder:text-muted-foreground print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
           </div>
           <div className="space-y-1">
-            <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider pl-1 sm:text-right block print:hidden">Candidate Name</label>
-            <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={(e) => s.updateField('candidateName', e.target.value)} className="w-full bg-transparent border-b border-border text-foreground px-1 py-1 focus:outline-none focus:border-primary transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg" />
+            <label className="text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wider pl-1 sm:text-right block print:hidden">Candidate Name</label>
+            <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={(e) => s.updateField('candidateName', e.target.value)} className="w-full bg-transparent border-b border-border text-foreground dark:text-white px-1 py-1 focus:outline-none focus:border-primary transition-colors placeholder:text-muted-foreground print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg" />
           </div>
         </div>
 
         <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)} className="w-full">
           <TabsList className="grid w-full max-w-3xl grid-cols-4 mb-8 bg-input/40 p-1 rounded-xl print:hidden">
-            <TabsTrigger value="contract" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm"><Ship className="h-4 w-4" />Contract</TabsTrigger>
-            <TabsTrigger value="perm" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm"><Briefcase className="h-4 w-4" />Perm</TabsTrigger>
-            <TabsTrigger value="paydays" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm"><CalendarDays className="h-4 w-4" />Paydays</TabsTrigger>
-            <TabsTrigger value="reference" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm"><FileCheck className="h-4 w-4" />Reference</TabsTrigger>
+            <TabsTrigger value="contract" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm data-[state=active]:bg-background data-[state=active]:text-foreground dark:data-[state=active]:bg-slate-800 dark:data-[state=active]:text-white text-muted-foreground dark:text-gray-300 font-semibold"><Ship className="h-4 w-4" />Contract</TabsTrigger>
+            <TabsTrigger value="perm" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm data-[state=active]:bg-background data-[state=active]:text-foreground dark:data-[state=active]:bg-slate-800 dark:data-[state=active]:text-white text-muted-foreground dark:text-gray-300 font-semibold"><Briefcase className="h-4 w-4" />Perm</TabsTrigger>
+            <TabsTrigger value="paydays" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm data-[state=active]:bg-background data-[state=active]:text-foreground dark:data-[state=active]:bg-slate-800 dark:data-[state=active]:text-white text-muted-foreground dark:text-gray-300 font-semibold"><CalendarDays className="h-4 w-4" />Paydays</TabsTrigger>
+            <TabsTrigger value="reference" className="flex gap-2 rounded-lg data-[state=active]:shadow-sm data-[state=active]:bg-background data-[state=active]:text-foreground dark:data-[state=active]:bg-slate-800 dark:data-[state=active]:text-white text-muted-foreground dark:text-gray-300 font-semibold"><FileCheck className="h-4 w-4" />Reference</TabsTrigger>
           </TabsList>
 
           {/* ─────────────── CONTRACT TAB ─────────────── */}
@@ -1012,25 +1016,25 @@ export default function CalculatorPage() {
               <div className="lg:col-span-5 flex flex-col gap-6 print:hidden">
                 <CollapsibleCard title="Day Rate & Tax" icon={FileText} defaultOpen>
                   <div className="space-y-4 mb-4">
-                    <label className="block text-sm font-bold">Currency & Crew</label>
+                    <label className="block text-sm font-bold text-foreground dark:text-white">Currency & Crew</label>
                     <div className="flex gap-2">
                       <SegmentedControl value={s.cCurrency} onChange={(v: string) => s.updateField('cCurrency', v as CurrencyCode)} options={CURRENCIES.map(c => ({label: c, value: c}))} ariaLabel="Currency" />
                     </div>
                     <AnimatedSection show={s.cCurrency !== 'GBP'}>
                       <div className="space-y-3 p-4 bg-input/30 border border-input rounded-xl mb-6">
-                        <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+                        <div className="flex items-center gap-2 text-sm font-bold text-foreground dark:text-white">
                           <Globe className="h-4 w-4" />Exchange Rate
                         </div>
                         <div className="space-y-1">
-                          <label htmlFor="c-fx-date" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Placement / Start Date</label>
-                          <input id="c-fx-date" type="date" value={s.cFxDate} onChange={(e) => s.updateField('cFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
+                          <label htmlFor="c-fx-date" className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Placement / Start Date</label>
+                          <input id="c-fx-date" type="date" value={s.cFxDate} onChange={(e) => s.updateField('cFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-input/40 border border-input text-foreground dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
                         </div>
                         <div className="flex items-center justify-between rounded-lg bg-card/60 px-3 py-2.5">
                           <div className="text-sm font-medium">
                             {cFx.loading ? (
                               <span className="text-muted-foreground">Fetching rate…</span>
                             ) : cFx.rate !== null ? (
-                              <span className="font-mono font-bold animate-in fade-in duration-300">1 {s.cCurrency} = {cFx.rate.toFixed(4)} GBP</span>
+                              <span className="font-mono font-bold animate-in fade-in duration-300 text-foreground dark:text-white">1 {s.cCurrency} = {cFx.rate.toFixed(4)} GBP</span>
                             ) : (
                               <span className="text-muted-foreground">No rate yet</span>
                             )}
@@ -1048,33 +1052,33 @@ export default function CalculatorPage() {
                       </div>
                     </AnimatedSection>
                     <div className="flex items-center justify-between gap-4 p-3 bg-input/30 rounded-xl border border-input">
-                      <label className="text-sm font-bold flex items-center gap-2"><Users className="h-4 w-4"/> Crew Size (Multiplier)</label>
-                      <input type="number" min="1" value={s.crewSize} onChange={(e) => s.updateField('crewSize', e.target.value)} className="w-20 px-3 py-1.5 bg-background border border-input rounded-lg font-mono text-center focus:ring-2 focus:ring-primary outline-none" />
+                      <label className="text-sm font-bold flex items-center gap-2 text-foreground dark:text-white"><Users className="h-4 w-4"/> Crew Size (Multiplier)</label>
+                      <input type="number" min="1" value={s.crewSize} onChange={(e) => s.updateField('crewSize', e.target.value)} className="w-20 px-3 py-1.5 bg-background border border-input text-foreground dark:text-white rounded-lg font-mono text-center focus:ring-2 focus:ring-primary outline-none" />
                     </div>
                   </div>
 
                   <div className="space-y-2">
-                    <label className="block text-sm font-bold">Consolidated Rate — Seafarer Pay</label>
+                    <label className="block text-sm font-bold text-foreground dark:text-white">Consolidated Rate — Seafarer Pay</label>
                     <NumInput value={s.consolidatedRate} onChange={(v: string) => s.updateField('consolidatedRate', v)} prefix={curSym(s.cCurrency)} />
                   </div>
 
                   <div className="space-y-3 pt-2">
                     <div className="flex justify-between group">
                       <div className="space-y-1 pr-4">
-                        <label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includePension', !s.includePension)}>Include Pension</label>
-                        <p className="text-xs text-muted-foreground font-medium">Standard {activeFiscalRates.pension * 100}% addition</p>
+                        <label className="text-sm font-bold cursor-pointer text-foreground dark:text-white" onClick={() => s.updateField('includePension', !s.includePension)}>Include Pension</label>
+                        <p className="text-xs text-muted-foreground dark:text-gray-400 font-medium">Standard {activeFiscalRates.pension * 100}% addition</p>
                       </div>
                       <Switch checked={s.includePension} onCheckedChange={(v: boolean) => s.updateField('includePension', v)} />
                     </div>
                     <div className="flex justify-between group">
                       <div className="space-y-1 pr-4">
-                        <label className="text-sm font-bold flex items-center cursor-pointer" onClick={() => s.updateField('includeAppyLevy', !s.includeAppyLevy)}>Include Apprenticeship Levy <Tooltip text="A 0.5% tax on large employers to fund apprenticeship training." /></label>
-                        <p className="text-xs text-muted-foreground font-medium">Standard {activeFiscalRates.apprenticeshipLevy * 100}% addition</p>
+                        <label className="text-sm font-bold flex items-center cursor-pointer text-foreground dark:text-white" onClick={() => s.updateField('includeAppyLevy', !s.includeAppyLevy)}>Include Apprenticeship Levy <Tooltip text="A 0.5% tax on large employers to fund apprenticeship training." /></label>
+                        <p className="text-xs text-muted-foreground dark:text-gray-400 font-medium">Standard {activeFiscalRates.apprenticeshipLevy * 100}% addition</p>
                       </div>
                       <Switch checked={s.includeAppyLevy} onCheckedChange={(v: boolean) => s.updateField('includeAppyLevy', v)} />
                     </div>
                     <div className="space-y-2">
-                      <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includeContingency', !s.includeContingency)}>Add Contingency</label><Switch checked={s.includeContingency} onCheckedChange={(v: boolean) => s.updateField('includeContingency', v)} /></div>
+                      <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer text-foreground dark:text-white" onClick={() => s.updateField('includeContingency', !s.includeContingency)}>Add Contingency</label><Switch checked={s.includeContingency} onCheckedChange={(v: boolean) => s.updateField('includeContingency', v)} /></div>
                       <AnimatedSection show={s.includeContingency}>
                         <div className="flex items-center gap-2 pt-1">
                            <div className="w-24"><SegmentedControl value={s.contingencyType} onChange={(v: string) => s.updateField('contingencyType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Contingency Type" /></div>
@@ -1086,14 +1090,14 @@ export default function CalculatorPage() {
 
                   <div className="space-y-2 pt-4 border-t border-border/60 mt-4">
                     <div className="flex items-center justify-between">
-                      <label className="block text-sm font-bold">Management Fee</label>
+                      <label className="block text-sm font-bold text-foreground dark:text-white">Management Fee</label>
                       <div className="w-32"><SegmentedControl value={s.feeType} onChange={(v: string) => s.updateField('feeType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Fee Type" /></div>
                     </div>
                     <NumInput value={s.margin} onChange={(v: string) => s.updateField('margin', v)} prefix={s.feeType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.feeType === 'percentage' ? '%' : undefined} />
                   </div>
 
                   <div className="pt-4 space-y-4 border-t border-border/60 mt-4">
-                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includeNI', !s.includeNI)}>Include Employer's NI</label><Switch checked={s.includeNI} onCheckedChange={(v: boolean) => s.updateField('includeNI', v)} /></div>
+                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer text-foreground dark:text-white" onClick={() => s.updateField('includeNI', !s.includeNI)}>Include Employer's NI</label><Switch checked={s.includeNI} onCheckedChange={(v: boolean) => s.updateField('includeNI', v)} /></div>
                     <AnimatedSection show={s.includeNI}>
                       <div className="space-y-3 bg-amber-500/5 p-4 rounded-xl border border-amber-500/20">
                         <SegmentedControl value={s.niMode} onChange={(v: string) => s.updateField('niMode', v as 'base' | 'total')} options={[{label: 'Base Rate', value: 'base'}, {label: 'Total Amount', value: 'total'}]} ariaLabel="NI Mode" />
@@ -1105,7 +1109,7 @@ export default function CalculatorPage() {
 
                 <CollapsibleCard title="Subsistence & Victualling" icon={UtensilsCrossed} defaultOpen={false}>
                   <div className="flex items-center justify-between mb-2">
-                    <label className="text-sm font-bold cursor-pointer flex items-center" onClick={() => s.updateField('includeSubsistence', !s.includeSubsistence)}>
+                    <label className="text-sm font-bold cursor-pointer flex items-center text-foreground dark:text-white" onClick={() => s.updateField('includeSubsistence', !s.includeSubsistence)}>
                       Enable Subsistence
                       <Tooltip text="Food and provisions provided onboard. Typically £0 as covered by the vessel." />
                     </label>
@@ -1113,23 +1117,23 @@ export default function CalculatorPage() {
                   </div>
                   <AnimatedSection show={s.includeSubsistence} className="pt-3 space-y-5 border-t border-border/40 mt-3">
                     <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel</label><NumInput value={s.subsistenceTravel} onChange={(v: string) => s.updateField('subsistenceTravel', v)} prefix={curSym(s.cCurrency)} /></div>
-                      <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Onboard</label><NumInput value={s.subsistenceOnboard} onChange={(v: string) => s.updateField('subsistenceOnboard', v)} prefix={curSym(s.cCurrency)} /></div>
+                      <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Travel</label><NumInput value={s.subsistenceTravel} onChange={(v: string) => s.updateField('subsistenceTravel', v)} prefix={curSym(s.cCurrency)} /></div>
+                      <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Onboard</label><NumInput value={s.subsistenceOnboard} onChange={(v: string) => s.updateField('subsistenceOnboard', v)} prefix={curSym(s.cCurrency)} /></div>
                     </div>
-                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer" onClick={() => s.includeSubsistence && s.updateField('subsistenceInFee', !s.subsistenceInFee)}>Apply margin to subsistence</label><Switch checked={s.subsistenceInFee} onCheckedChange={(v: boolean) => s.updateField('subsistenceInFee', v)} disabled={!s.includeSubsistence} /></div>
+                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer text-foreground dark:text-white" onClick={() => s.includeSubsistence && s.updateField('subsistenceInFee', !s.subsistenceInFee)}>Apply margin to subsistence</label><Switch checked={s.subsistenceInFee} onCheckedChange={(v: boolean) => s.updateField('subsistenceInFee', v)} disabled={!s.includeSubsistence} /></div>
                   </AnimatedSection>
                 </CollapsibleCard>
 
                 <CollapsibleCard title="Hitch & Logistics Scheduler" icon={Anchor} defaultOpen={false}>
-                   <div className="flex justify-between"><label className="text-sm font-bold">Enable Hitch Scheduler</label><Switch checked={s.includeTrip} onCheckedChange={(v: boolean) => s.updateField('includeTrip', v)} /></div>
+                   <div className="flex justify-between"><label className="text-sm font-bold text-foreground dark:text-white">Enable Hitch Scheduler</label><Switch checked={s.includeTrip} onCheckedChange={(v: boolean) => s.updateField('includeTrip', v)} /></div>
                    <AnimatedSection show={s.includeTrip} className="pt-4 space-y-4 border-t border-border/40 mt-3">
-                     <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Days Onboard</label><NumInput value={s.workingDays} onChange={(v: string) => s.updateField('workingDays', v)} placeholder="Working Days" /></div>
+                     <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Days Onboard</label><NumInput value={s.workingDays} onChange={(v: string) => s.updateField('workingDays', v)} placeholder="Working Days" /></div>
                      <div className="grid grid-cols-2 gap-4 pt-4 border-t border-border/50">
-                       <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel Days</label><NumInput value={s.travelDays} onChange={(v: string) => s.updateField('travelDays', v)} placeholder="Travel Days" /></div>
-                       <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Charge Rate</label><SegmentedControl value={s.travelDayFull ? 'full' : 'half'} onChange={(v: string) => s.updateField('travelDayFull', v === 'full')} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full rate', value: 'full'}]} ariaLabel="Travel Rate" /></div>
+                       <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Travel Days</label><NumInput value={s.travelDays} onChange={(v: string) => s.updateField('travelDays', v)} placeholder="Travel Days" /></div>
+                       <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Charge Rate</label><SegmentedControl value={s.travelDayFull ? 'full' : 'half'} onChange={(v: string) => s.updateField('travelDayFull', v === 'full')} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full rate', value: 'full'}]} ariaLabel="Travel Rate" /></div>
                      </div>
                      <div className="space-y-3 pt-4 border-t border-border/50">
-                       <div className="flex items-center justify-between"><label className="block text-sm font-bold">Travel & Logistics Costs</label><div className="flex items-center gap-2"><label className="text-xs font-bold text-muted-foreground cursor-pointer" onClick={() => s.updateField('logisticsInFee', !s.logisticsInFee)}>Add Travel Fee</label><Switch checked={s.logisticsInFee} onCheckedChange={(v: boolean) => s.updateField('logisticsInFee', v)} className="scale-75 origin-right" /></div></div>
+                       <div className="flex items-center justify-between"><label className="block text-sm font-bold text-foreground dark:text-white">Travel & Logistics Costs</label><div className="flex items-center gap-2"><label className="text-xs font-bold text-muted-foreground dark:text-gray-400 cursor-pointer" onClick={() => s.updateField('logisticsInFee', !s.logisticsInFee)}>Add Travel Fee</label><Switch checked={s.logisticsInFee} onCheckedChange={(v: boolean) => s.updateField('logisticsInFee', v)} className="scale-75 origin-right" /></div></div>
                        <div className="grid grid-cols-3 gap-2">
                          <NumInput value={s.mobTravel} onChange={(v: string) => s.updateField('mobTravel', v)} placeholder="Travel" prefix={curSym(s.cCurrency)} />
                          <NumInput value={s.mobVisas} onChange={(v: string) => s.updateField('mobVisas', v)} placeholder="Visas" prefix={curSym(s.cCurrency)} />
@@ -1137,7 +1141,7 @@ export default function CalculatorPage() {
                        </div>
                        <AnimatedSection show={s.logisticsInFee} className="space-y-2 pt-3">
                          <div className="flex items-center justify-between">
-                           <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel Fee</label>
+                           <label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Travel Fee</label>
                            <div className="w-28"><SegmentedControl value={s.travelFeeType} onChange={(v: string) => s.updateField('travelFeeType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Travel Fee Type" /></div>
                          </div>
                          <NumInput value={s.travelFee} onChange={(v: string) => s.updateField('travelFee', v)} prefix={s.travelFeeType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.travelFeeType === 'percentage' ? '%' : undefined} />
@@ -1147,14 +1151,14 @@ export default function CalculatorPage() {
                 </CollapsibleCard>
               </div>
 
-              <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
+              <div className="lg:col-span-7 bg-slate-900 text-white border border-slate-800 rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
                 {contract.cRate === 0 && !dbConsolidatedRate ? (
-                  <div className="absolute inset-0 z-10 bg-primary/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
-                    <div className="p-4 bg-primary-foreground/10 rounded-full mb-4">
-                      <Ship className="h-8 w-8 text-primary-foreground/60" />
+                  <div className="absolute inset-0 z-10 bg-slate-900/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
+                    <div className="p-4 bg-white/10 rounded-full mb-4">
+                      <Ship className="h-8 w-8 text-white/70" />
                     </div>
-                    <h3 className="text-xl font-bold mb-2">Awaiting Parameters</h3>
-                    <p className="text-primary-foreground/70 font-medium max-w-sm">
+                    <h3 className="text-xl font-bold mb-2 text-white">Awaiting Parameters</h3>
+                    <p className="text-white/70 font-medium max-w-sm">
                       Enter a consolidated day rate and management fee to generate the maritime charge breakdown.
                     </p>
                   </div>
@@ -1162,7 +1166,7 @@ export default function CalculatorPage() {
 
                 <div className="p-8 md:p-10 flex-grow relative z-0">
                   <div className="flex items-center justify-between gap-4 mb-8">
-                    <h2 className="text-xl font-bold">{s.crewSize !== '1' ? `Crew Charge Breakdown (${s.crewSize} Members)` : 'Charge Rate Breakdown'}</h2>
+                    <h2 className="text-xl font-bold text-white">{s.crewSize !== '1' ? `Crew Charge Breakdown (${s.crewSize} Members)` : 'Charge Rate Breakdown'}</h2>
                     <div className="flex items-center gap-2">
                       <ActionButton onClick={copyContractBreakdown} icon={Copy} label="Copy" />
                       <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
@@ -1177,7 +1181,7 @@ export default function CalculatorPage() {
                         <Pie data={chartData} cx="50%" cy="50%" innerRadius={30} outerRadius={45} paddingAngle={2} dataKey="value" stroke="none">
                           {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
                         </Pie>
-                        <ChartTooltip formatter={(value: number) => formatCurrencyIn(value, s.cCurrency)} contentStyle={{ borderRadius: '8px', border: 'none', backgroundColor: '#1e293b', color: '#fff' }} itemStyle={{ color: '#fff' }} />
+                        <ChartTooltip formatter={(value: number) => formatCurrencyIn(value, s.cCurrency)} contentStyle={{ borderRadius: '8px', border: 'none', backgroundColor: '#0f172a', color: '#fff' }} itemStyle={{ color: '#fff' }} />
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
@@ -1194,21 +1198,41 @@ export default function CalculatorPage() {
                     {s.includeSubsistence && contract.cSubOnboardAmt > 0 && <LineItem label="Onboard Victualling/Sub" value={contract.cSubOnboardAmt * contract.crewSize} currency={s.cCurrency} />}
                     <LineItem label={`Management Fee (${contract.feeType === 'percentage' && contract.cMarginVal > 0 ? `${contract.cMarginVal}%` : 'Fixed'})`} value={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
 
-                    <div className="mt-4 pt-5 border-t-2 border-primary-foreground/30 flex items-center justify-between">
-                      <span className="text-lg font-bold">Total Charge Per Day</span>
-                      <span className="text-3xl font-mono font-bold text-chart-1 animate-in zoom-in-95 duration-200">{formatCurrencyIn(contract.cTotalCharge * contract.crewSize, s.cCurrency)}</span>
+                    <div className="mt-4 pt-5 border-t-2 border-white/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <span className="text-lg font-bold text-white block">Total Charge Per Day</span>
+                        {s.cCurrency !== 'GBP' && (
+                          <div className="flex items-center gap-2 mt-1.5 print:hidden">
+                            <span className="text-xs text-white/70 font-semibold">Display Currency:</span>
+                            <div className="w-36">
+                              <SegmentedControl 
+                                value={s.displayCurrency} 
+                                onChange={(v: string) => s.updateField('displayCurrency', v as 'original' | 'gbp')} 
+                                options={[{label: s.cCurrency, value: 'original'}, {label: 'GBP (£', value: 'gbp'}]} 
+                                ariaLabel="Display Currency Toggle"
+                                variant="light" 
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-3xl font-mono font-bold text-emerald-400 animate-in zoom-in-95 duration-200">
+                        {s.displayCurrency === 'gbp' && s.cCurrency !== 'GBP' && cFx.rate !== null
+                          ? formatCurrencyIn(contract.cTotalCharge * contract.crewSize * cFx.rate, 'GBP')
+                          : formatCurrencyIn(contract.cTotalCharge * contract.crewSize, s.cCurrency)}
+                      </span>
                     </div>
 
-                    {s.cCurrency !== 'GBP' && cFx.rate !== null && (
-                      <div className="flex items-center justify-between pt-2 text-sm text-primary-foreground/60 print:text-gray-500 border-t border-primary-foreground/10 print:border-gray-200">
+                    {s.cCurrency !== 'GBP' && cFx.rate !== null && s.displayCurrency === 'original' && (
+                      <div className="flex items-center justify-between pt-2 text-sm text-white/70 print:text-gray-500 border-t border-white/10 print:border-gray-200">
                          <span>Converted Equivalency (@ {cFx.rate.toFixed(4)})</span>
                          <span className="font-mono font-bold tabular-nums text-white print:text-black">{formatCurrencyIn(contract.cTotalCharge * contract.crewSize * cFx.rate, 'GBP')}</span>
                       </div>
                     )}
                   </div>
 
-                  <AnimatedSection show={s.includeTrip} className="mt-8 pt-6 border-t border-primary-foreground/20">
-                    <h3 className="text-sm font-bold uppercase tracking-widest text-primary-foreground/60 mb-4">Single Travel Day Reference {s.crewSize !== '1' ? '(Total Crew)' : ''}</h3>
+                  <AnimatedSection show={s.includeTrip} className="mt-8 pt-6 border-t border-white/20">
+                    <h3 className="text-sm font-bold uppercase tracking-widest text-white/70 mb-4">Single Travel Day Reference {s.crewSize !== '1' ? '(Total Crew)' : ''}</h3>
                     <div className="space-y-2.5">
                       <LineItem label={`Consolidated Rate (×${s.travelDayFull ? '1' : '0.5'})`} value={contract.cTravelRate * contract.crewSize} currency={s.cCurrency} />
                       {s.includePension && <LineItem label="Pension" value={contract.cTravelPension * contract.crewSize} currency={s.cCurrency} />}
@@ -1217,19 +1241,19 @@ export default function CalculatorPage() {
                       {s.includeNI && !s.seafarerExempt && <LineItem label="Employers NIC" value={contract.cTravelNI * contract.crewSize} currency={s.cCurrency} />}
                       {s.includeSubsistence && contract.cSubTravelAmt > 0 && <LineItem label="Travel Subsistence (100%)" value={contract.cSubTravelAmt * contract.crewSize} currency={s.cCurrency} />}
                       <LineItem label={`Management Fee`} value={contract.cTravelManagementFee * contract.crewSize} currency={s.cCurrency} />
-                      <div className="pt-3 border-t border-primary-foreground/20 flex items-center justify-between">
-                        <span className="text-sm font-bold">Travel Day Total</span>
-                        <span className="font-mono font-bold text-base text-chart-1">{formatCurrencyIn(contract.cTravelDayCharge * contract.crewSize, s.cCurrency)}</span>
+                      <div className="pt-3 border-t border-white/20 flex items-center justify-between">
+                        <span className="text-sm font-bold text-white">Travel Day Total</span>
+                        <span className="font-mono font-bold text-base text-emerald-400">{formatCurrencyIn(contract.cTravelDayCharge * contract.crewSize, s.cCurrency)}</span>
                       </div>
                     </div>
                   </AnimatedSection>
                 </div>
 
-                <div className="bg-primary-foreground/5 p-8 md:p-10 border-t border-primary-foreground/10 relative z-0">
+                <div className="bg-black/20 p-8 md:p-10 border-t border-white/10 relative z-0">
                   {s.includeTrip ? (
                     <div className="animate-in fade-in duration-300">
                       <div className="flex items-center justify-between mb-6">
-                        <h3 className="text-xs font-bold uppercase tracking-widest text-primary-foreground/60">Hitch Crew-Change Invoice {s.crewSize !== '1' ? '(Full Crew)' : ''}</h3>
+                        <h3 className="text-xs font-bold uppercase tracking-widest text-white/70">Hitch Crew-Change Invoice {s.crewSize !== '1' ? '(Full Crew)' : ''}</h3>
                         <div className="flex gap-2">
                            <ActionButton onClick={copyTripSummary} icon={Copy} label="Copy" />
                            <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
@@ -1237,49 +1261,53 @@ export default function CalculatorPage() {
                       </div>
                       <div className="space-y-4">
 
-                        <div className="bg-primary-foreground/5 p-4 rounded-xl space-y-2">
-                          <div className="flex items-center justify-between font-bold">
+                        <div className="bg-white/5 p-4 rounded-xl space-y-2">
+                          <div className="flex items-center justify-between font-bold text-white">
                             <span>Days Onboard</span>
                             <span className="font-mono">{formatCurrencyIn(contract.crewTripWorkingTotal, s.cCurrency)}</span>
                           </div>
-                          <div className="text-xs text-primary-foreground/50">{contract.nWorkingDays} days × {formatCurrencyIn(contract.cTotalCharge * contract.crewSize, s.cCurrency)}</div>
+                          <div className="text-xs text-white/60">{contract.nWorkingDays} days × {formatCurrencyIn(contract.cTotalCharge * contract.crewSize, s.cCurrency)}</div>
                         </div>
 
-                        <div className="bg-primary-foreground/5 p-4 rounded-xl space-y-2">
-                          <div className="flex items-center justify-between font-bold">
+                        <div className="bg-white/5 p-4 rounded-xl space-y-2">
+                          <div className="flex items-center justify-between font-bold text-white">
                             <span>Travel Days ({contract.nTravelDays})</span>
                             <span className="font-mono">{formatCurrencyIn(contract.crewTripTravelTotal, s.cCurrency)}</span>
                           </div>
-                          <div className="text-xs text-primary-foreground/50">{contract.travelPayableDays} days pay + {contract.travelSubDays} full days sub</div>
+                          <div className="text-xs text-white/60">{contract.travelPayableDays} days pay + {contract.travelSubDays} full days sub</div>
                         </div>
 
                         {contract.crewLogisticsTotal > 0 && (
-                          <div className="bg-primary-foreground/5 p-4 rounded-xl flex flex-col gap-2">
-                            <div className="flex items-center justify-between font-bold">
+                          <div className="bg-white/5 p-4 rounded-xl flex flex-col gap-2">
+                            <div className="flex items-center justify-between font-bold text-white">
                               <span>Travel & Logistics Costs</span>
                               <span className="font-mono">{formatCurrencyIn(contract.crewLogisticsTotal, s.cCurrency)}</span>
                             </div>
-                            <span className="text-xs text-primary-foreground/50 leading-relaxed">
+                            <span className="text-xs text-white/60 leading-relaxed">
                               Travel: {curSym(s.cCurrency)}{dbMobTravel || '0'} | VISA / Cert.: {curSym(s.cCurrency)}{dbMobVisas || '0'} | Agent: {curSym(s.cCurrency)}{dbMobAgent || '0'} <br />
                               {s.logisticsInFee && contract.logisticsFee > 0 && `${contract.travelFeeType === 'percentage' ? contract.cTravelFeeVal + '%' : 'Fixed'} Travel Fee: ${formatCurrencyIn(contract.logisticsFee * contract.crewSize, s.cCurrency)}`}
                             </span>
                           </div>
                         )}
 
-                        <div className="pt-2 border-t-2 border-primary-foreground/30 flex flex-col gap-2">
+                        <div className="pt-2 border-t-2 border-white/30 flex flex-col gap-2">
                           <div className="flex items-center justify-between">
                             <div>
-                              <span className="text-lg font-bold block">Total Hitch Invoice</span>
-                              <span className="text-xs text-primary-foreground/50 font-medium">{contract.nWorkingDays + contract.nTravelDays} days total</span>
+                              <span className="text-lg font-bold text-white block">Total Hitch Invoice</span>
+                              <span className="text-xs text-white/65 font-medium">{contract.nWorkingDays + contract.nTravelDays} days total</span>
                             </div>
-                            <span className="text-3xl font-mono font-bold text-chart-1 animate-in zoom-in-95 duration-200" key={contract.crewTripGrandTotal}>{formatCurrencyIn(contract.crewTripGrandTotal, s.cCurrency)}</span>
+                            <span className="text-3xl font-mono font-bold text-emerald-400 animate-in zoom-in-95 duration-200" key={contract.crewTripGrandTotal}>
+                              {s.displayCurrency === 'gbp' && s.cCurrency !== 'GBP' && cFx.rate !== null
+                                ? formatCurrencyIn(contract.crewTripGrandTotal * cFx.rate, 'GBP')
+                                : formatCurrencyIn(contract.crewTripGrandTotal, s.cCurrency)}
+                            </span>
                           </div>
                         </div>
                       </div>
                     </div>
                   ) : (
                     <div className="animate-in fade-in duration-300 print:hidden">
-                      <h3 className="text-xs font-bold uppercase tracking-widest text-primary-foreground/60 mb-6">Standard Revenue Projections {s.crewSize !== '1' ? `(×${s.crewSize})` : ''}</h3>
+                      <h3 className="text-xs font-bold uppercase tracking-widest text-white/70 mb-6">Standard Revenue Projections {s.crewSize !== '1' ? `(×${s.crewSize})` : ''}</h3>
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                         <ProjectionCard label="Weekly" days={5} charge={contract.cTotalCharge * contract.crewSize} fee={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
                         <ProjectionCard label="Monthly" days={21} charge={contract.cTotalCharge * contract.crewSize} fee={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
@@ -1298,20 +1326,20 @@ export default function CalculatorPage() {
                <div className="lg:col-span-5 space-y-6 print:hidden">
                  <CollapsibleCard title="Perm Settings" icon={Briefcase} defaultOpen>
                     <div className="space-y-4 mb-4">
-                      <label className="block text-sm font-bold">Salary Currency</label>
+                      <label className="block text-sm font-bold text-foreground dark:text-white">Salary Currency</label>
                       <SegmentedControl value={s.pCurrency} onChange={(v: string) => s.updateField('pCurrency', v as CurrencyCode)} options={CURRENCIES.map(c => ({label: c, value: c}))} ariaLabel="Perm Currency" />
                     </div>
 
                     <AnimatedSection show={s.pCurrency !== 'GBP'}>
                       <div className="space-y-3 p-4 bg-input/30 border border-input rounded-xl mt-2 mb-4">
-                        <div className="flex items-center gap-2 text-sm font-bold"><Globe className="h-4 w-4" />Exchange Rate</div>
+                        <div className="flex items-center gap-2 text-sm font-bold text-foreground dark:text-white"><Globe className="h-4 w-4" />Exchange Rate</div>
                         <div className="space-y-1">
-                          <label htmlFor="p-fx-date" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Placement / Start Date</label>
-                          <input id="p-fx-date" type="date" value={s.pFxDate} onChange={(e) => s.updateField('pFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
+                          <label htmlFor="p-fx-date" className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Placement / Start Date</label>
+                          <input id="p-fx-date" type="date" value={s.pFxDate} onChange={(e) => s.updateField('pFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-input/40 border border-input text-foreground dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
                         </div>
                         <div className="flex items-center justify-between rounded-lg bg-card/60 px-3 py-2.5">
                           <div className="text-sm font-medium">
-                            {pFx.loading ? <span className="text-muted-foreground">Fetching rate…</span> : pFx.rate !== null ? <span className="font-mono font-bold">1 {s.pCurrency} = {pFx.rate.toFixed(4)} GBP</span> : <span className="text-muted-foreground">No rate yet</span>}
+                            {pFx.loading ? <span className="text-muted-foreground">Fetching rate…</span> : pFx.rate !== null ? <span className="font-mono font-bold text-foreground dark:text-white">1 {s.pCurrency} = {pFx.rate.toFixed(4)} GBP</span> : <span className="text-muted-foreground">No rate yet</span>}
                           </div>
                           <button onClick={pFx.refresh} aria-label="Refresh exchange rate" className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-input/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><RefreshCw className={cn('h-3.5 w-3.5', pFx.loading && 'animate-spin')} /></button>
                         </div>
@@ -1319,36 +1347,36 @@ export default function CalculatorPage() {
                     </AnimatedSection>
 
                     <div className="space-y-2">
-                      <label className="block text-sm font-bold">Candidate Annual Salary ({s.pCurrency})</label>
+                      <label className="block text-sm font-bold text-foreground dark:text-white">Candidate Annual Salary ({s.pCurrency})</label>
                       <NumInput value={s.salary} onChange={(v: string) => s.updateField('salary', v)} prefix={curSym(s.pCurrency)} />
                     </div>
                     <div className="space-y-2 mt-4">
-                      <label className="block text-sm font-bold">Placement Fee (%)</label>
+                      <label className="block text-sm font-bold text-foreground dark:text-white">Placement Fee (%)</label>
                       <NumInput value={s.placementFee} onChange={(v: string) => s.updateField('placementFee', v)} suffix="%" />
                     </div>
 
                     <AnimatedSection show={s.pCurrency !== 'GBP'}>
                        <div className="flex justify-between group border-t border-border/60 pt-4 mt-4">
                          <div className="space-y-1 pr-4">
-                           <label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('invoiceInOrigin', !s.invoiceInOrigin)}>Invoice in Origin Currency</label>
-                           <p className="text-xs text-muted-foreground font-medium">Calculate placement fee in {s.pCurrency} instead of GBP</p>
+                           <label className="text-sm font-bold cursor-pointer text-foreground dark:text-white" onClick={() => s.updateField('invoiceInOrigin', !s.invoiceInOrigin)}>Invoice in Origin Currency</label>
+                           <p className="text-xs text-muted-foreground dark:text-gray-400 font-medium">Calculate placement fee in {s.pCurrency} instead of GBP</p>
                          </div>
                          <Switch checked={s.invoiceInOrigin} onCheckedChange={(v: boolean) => s.updateField('invoiceInOrigin', v)} />
                        </div>
                     </AnimatedSection>
 
-                    <div className="flex justify-between border-t border-border/60 mt-4 pt-4"><label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includePermNI', !s.includePermNI)}>Include Employer's NI</label><Switch checked={s.includePermNI} onCheckedChange={(v: boolean) => s.updateField('includePermNI', v)} /></div>
+                    <div className="flex justify-between border-t border-border/60 mt-4 pt-4"><label className="text-sm font-bold cursor-pointer text-foreground dark:text-white" onClick={() => s.updateField('includePermNI', !s.includePermNI)}>Include Employer's NI</label><Switch checked={s.includePermNI} onCheckedChange={(v: boolean) => s.updateField('includePermNI', v)} /></div>
                  </CollapsibleCard>
                </div>
 
-               <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
+               <div className="lg:col-span-7 bg-slate-900 text-white border border-slate-800 rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
                   {perm.pSalaryInput === 0 && !dbSalary ? (
-                    <div className="absolute inset-0 z-10 bg-primary/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
-                      <div className="p-4 bg-primary-foreground/10 rounded-full mb-4">
-                        <Briefcase className="h-8 w-8 text-primary-foreground/60" />
+                    <div className="absolute inset-0 z-10 bg-slate-900/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
+                      <div className="p-4 bg-white/10 rounded-full mb-4">
+                        <Briefcase className="h-8 w-8 text-white/70" />
                       </div>
-                      <h3 className="text-xl font-bold mb-2">Awaiting Parameters</h3>
-                      <p className="text-primary-foreground/70 font-medium max-w-sm">
+                      <h3 className="text-xl font-bold mb-2 text-white">Awaiting Parameters</h3>
+                      <p className="text-white/70 font-medium max-w-sm">
                         Enter a candidate salary and placement fee to generate the invoice breakdown.
                       </p>
                     </div>
@@ -1356,7 +1384,7 @@ export default function CalculatorPage() {
 
                   <div className="p-8 md:p-10 flex-grow relative z-0">
                     <div className="flex items-center justify-between gap-4 mb-8">
-                      <h2 className="text-xl font-bold">Permanent Invoice Breakdown</h2>
+                      <h2 className="text-xl font-bold text-white">Permanent Invoice Breakdown</h2>
                       <div className="flex gap-2">
                          <ActionButton onClick={copyPermSummary} icon={Copy} label="Copy" />
                          <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
@@ -1376,20 +1404,20 @@ export default function CalculatorPage() {
                       ) : (
                         <>
                           <LineItem label={`Placement Fee (${perm.pFeePct}%)`} value={perm.pPlacementFee} isBold currency={s.invoiceInOrigin ? s.pCurrency : 'GBP'} />
-                          <div className="text-xs text-primary-foreground/60 font-medium bg-primary-foreground/5 p-2.5 rounded-lg flex items-center gap-2">
+                          <div className="text-xs text-white/70 font-medium bg-white/5 p-2.5 rounded-lg flex items-center gap-2">
                             <Info className="h-3.5 w-3.5 shrink-0" />
                             <span>Fee = {perm.pFeePct}% × {formatCurrencyIn(s.invoiceInOrigin ? perm.pSalaryInput : perm.pSalary, s.invoiceInOrigin ? s.pCurrency : 'GBP')}</span>
                           </div>
                         </>
                       )}
 
-                      {s.includePermNI && perm.pFxReady && (<><div className="h-px bg-primary-foreground/20 my-4" /><LineItem label="Employer's NI on Salary (UK Tax)" value={perm.pEmployerNI} currency="GBP" /></>)}
+                      {s.includePermNI && perm.pFxReady && (<><div className="h-px bg-white/20 my-4" /><LineItem label="Employer's NI on Salary (UK Tax)" value={perm.pEmployerNI} currency="GBP" /></>)}
 
-                      <div className="mt-4 pt-5 border-t-2 border-primary-foreground/30 flex items-center justify-between">
-                        <span className="text-lg font-bold">Total Invoice to Client</span>
-                        <span className="text-3xl font-mono font-bold text-chart-1 animate-in zoom-in-95 duration-200">{formatCurrencyIn(s.includePermNI ? perm.pTotalCost : perm.pPlacementFee, s.invoiceInOrigin ? s.pCurrency : 'GBP')}</span>
+                      <div className="mt-4 pt-5 border-t-2 border-white/30 flex items-center justify-between">
+                        <span className="text-lg font-bold text-white">Total Invoice to Client</span>
+                        <span className="text-3xl font-mono font-bold text-emerald-400 animate-in zoom-in-95 duration-200">{formatCurrencyIn(s.includePermNI ? perm.pTotalCost : perm.pPlacementFee, s.invoiceInOrigin ? s.pCurrency : 'GBP')}</span>
                       </div>
-                      <p className="text-xs text-primary-foreground/50 font-medium mt-1">
+                      <p className="text-xs text-white/60 font-medium mt-1">
                         {s.invoiceInOrigin && s.pCurrency !== 'GBP' && s.includePermNI ? "Notice: Cost blends multiple currencies." : s.invoiceInOrigin ? `Invoiced strictly in ${s.pCurrency}.` : "Invoiced in GBP regardless of origin salary currency."}
                       </p>
                     </div>
@@ -1402,17 +1430,17 @@ export default function CalculatorPage() {
           <TabsContent value="paydays" className="m-0 animate-in fade-in duration-400">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
               <div className="lg:col-span-5 flex flex-col gap-6 print:hidden">
-                <div className="bg-card border border-card-border p-7 rounded-2xl shadow-sm space-y-6">
-                  <h2 className="text-lg font-bold border-b border-border pb-4">Payment Days Calculator</h2>
+                <div className="bg-card text-card-foreground border border-card-border p-7 rounded-2xl shadow-sm space-y-6">
+                  <h2 className="text-lg font-bold border-b border-border pb-4 text-foreground dark:text-white">Payment Days Calculator</h2>
 
                   <div className="space-y-2">
-                    <label className="block text-sm font-bold">Payroll Type</label>
+                    <label className="block text-sm font-bold text-foreground dark:text-white">Payroll Type</label>
                     <SegmentedControl value={s.pdPayrollType} onChange={(v: string) => s.updateField('pdPayrollType', v as 'monthly' | 'fortnightly')} options={[{label: 'Monthly', value: 'monthly'}, {label: 'Fortnightly', value: 'fortnightly'}]} ariaLabel="Payroll Type" />
                   </div>
 
                   <div className="space-y-3">
-                    <label htmlFor="pd-start" className="block text-sm font-bold">Start Date</label>
-                    <input id="pd-start" type="date" value={s.pdStartDate} onChange={(e) => s.updateField('pdStartDate', e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
+                    <label htmlFor="pd-start" className="block text-sm font-bold text-foreground dark:text-white">Start Date</label>
+                    <input id="pd-start" type="date" value={s.pdStartDate} onChange={(e) => s.updateField('pdStartDate', e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input text-foreground dark:text-white rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
                     <SegmentedControl value={s.pdStartMode} onChange={(v: string) => s.updateField('pdStartMode', v as 'half' | 'full' | 'custom')} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full', value: 'full'}, {label: 'Custom', value: 'custom'}]} ariaLabel="Start Mode" />
                     <AnimatedSection show={s.pdStartMode === 'custom'} className="pt-2">
                        <NumInput value={s.pdStartCustomVal} onChange={(v: string) => s.updateField('pdStartCustomVal', v)} placeholder="0.5" suffix="days" />
@@ -1420,8 +1448,8 @@ export default function CalculatorPage() {
                   </div>
 
                   <div className="space-y-3 pt-4 border-t border-border/60">
-                    <label htmlFor="pd-finish" className="block text-sm font-bold">Finish Date</label>
-                    <input id="pd-finish" type="date" value={s.pdFinishDate} onChange={(e) => s.updateField('pdFinishDate', e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
+                    <label htmlFor="pd-finish" className="block text-sm font-bold text-foreground dark:text-white">Finish Date</label>
+                    <input id="pd-finish" type="date" value={s.pdFinishDate} onChange={(e) => s.updateField('pdFinishDate', e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input text-foreground dark:text-white rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
                     <SegmentedControl value={s.pdFinishMode} onChange={(v: string) => s.updateField('pdFinishMode', v as 'half' | 'full' | 'custom')} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full', value: 'full'}, {label: 'Custom', value: 'custom'}]} ariaLabel="Finish Mode" />
                     <AnimatedSection show={s.pdFinishMode === 'custom'} className="pt-2">
                        <NumInput value={s.pdFinishCustomVal} onChange={(v: string) => s.updateField('pdFinishCustomVal', v)} placeholder="0.5" suffix="days" />
@@ -1430,28 +1458,28 @@ export default function CalculatorPage() {
 
                   <div className="space-y-3 pt-4 border-t border-border/60 group">
                     <div className="flex items-center justify-between">
-                      <label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('pdIncludeSubsistence', !s.pdIncludeSubsistence)}>Include Subsistence</label>
+                      <label className="text-sm font-bold cursor-pointer text-foreground dark:text-white" onClick={() => s.updateField('pdIncludeSubsistence', !s.pdIncludeSubsistence)}>Include Subsistence</label>
                       <Switch checked={s.pdIncludeSubsistence} onCheckedChange={(v: boolean) => s.updateField('pdIncludeSubsistence', v)} />
                     </div>
                     <AnimatedSection show={s.pdIncludeSubsistence} className="pt-2">
-                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide mb-2">Subsistence Rate (£ per day)</label>
+                      <label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide mb-2">Subsistence Rate (£ per day)</label>
                       <NumInput value={s.pdSubsistenceRate} onChange={(v: string) => s.updateField('pdSubsistenceRate', v)} prefix="£" />
                     </AnimatedSection>
                   </div>
 
                   <div className="space-y-3 pt-4 border-t border-border/60 group">
                     <div className="flex items-center justify-between">
-                      <label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('pdIncludePay', !s.pdIncludePay)}>Calculate Period Pay & Advances</label>
+                      <label className="text-sm font-bold cursor-pointer text-foreground dark:text-white" onClick={() => s.updateField('pdIncludePay', !s.pdIncludePay)}>Calculate Period Pay & Advances</label>
                       <Switch checked={s.pdIncludePay} onCheckedChange={(v: boolean) => s.updateField('pdIncludePay', v)} />
                     </div>
                     <AnimatedSection show={s.pdIncludePay} className="pt-2">
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Day Rate (£)</label>
+                          <label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Day Rate (£)</label>
                           <NumInput value={s.pdDayRate} onChange={(v: string) => s.updateField('pdDayRate', v)} prefix="£" />
                         </div>
                         <div className="space-y-2">
-                          <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Advance Deduction (£)</label>
+                          <label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Advance Deduction (£)</label>
                           <NumInput value={s.pdAdvance} onChange={(v: string) => s.updateField('pdAdvance', v)} prefix="£" />
                         </div>
                       </div>
@@ -1460,13 +1488,13 @@ export default function CalculatorPage() {
                 </div>
               </div>
 
-              <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
+              <div className="lg:col-span-7 bg-slate-900 text-white border border-slate-800 rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
                 <div className="p-8 md:p-10 flex-grow relative z-0">
 
                   <div className="flex items-center justify-between gap-4 mb-8">
                     <div className="flex items-center gap-3">
-                      <h2 className="text-xl font-bold">Payroll Summary</h2>
-                      <span className="text-xs uppercase tracking-widest font-bold px-3 py-1.5 bg-primary-foreground/10 rounded-full print:bg-gray-200">
+                      <h2 className="text-xl font-bold text-white">Payroll Summary</h2>
+                      <span className="text-xs uppercase tracking-widest font-bold px-3 py-1.5 bg-white/10 text-white rounded-full print:bg-gray-200">
                         {s.pdPayrollType === 'monthly' ? 'Monthly' : 'Fortnightly'}
                       </span>
                     </div>
@@ -1480,12 +1508,12 @@ export default function CalculatorPage() {
                   </div>
 
                   {!s.pdStartDate || !s.pdFinishDate ? (
-                    <div className="absolute inset-0 z-10 bg-primary/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
-                      <div className="p-4 bg-primary-foreground/10 rounded-full mb-4">
-                        <CalendarDays className="h-8 w-8 text-primary-foreground/60" />
+                    <div className="absolute inset-0 z-10 bg-slate-900/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
+                      <div className="p-4 bg-white/10 rounded-full mb-4">
+                        <CalendarDays className="h-8 w-8 text-white/70" />
                       </div>
-                      <h3 className="text-xl font-bold mb-2">Select Dates</h3>
-                      <p className="text-primary-foreground/70 font-medium max-w-sm">
+                      <h3 className="text-xl font-bold mb-2 text-white">Select Dates</h3>
+                      <p className="text-white/70 font-medium max-w-sm">
                         Choose a start and finish date to automatically generate the payment schedule.
                       </p>
                     </div>
@@ -1495,26 +1523,26 @@ export default function CalculatorPage() {
                     </div>
                   ) : (
                     <div className="space-y-5 animate-in fade-in duration-500">
-                      <div className="bg-primary-foreground/10 rounded-2xl p-6 text-center print:bg-gray-100">
-                        <p className="text-sm font-bold uppercase tracking-widest text-primary-foreground/60 mb-1 print:text-gray-600">Total Payable Days</p>
-                        <p className="text-6xl font-mono font-bold text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={paydays.totalDays}>{paydays.totalDays}</p>
+                      <div className="bg-white/10 rounded-2xl p-6 text-center print:bg-gray-100">
+                        <p className="text-sm font-bold uppercase tracking-widest text-white/70 mb-1 print:text-gray-600">Total Payable Days</p>
+                        <p className="text-6xl font-mono font-bold text-emerald-400 animate-in zoom-in-95 duration-200 tabular-nums" key={paydays.totalDays}>{paydays.totalDays}</p>
                         {s.pdStartDate === s.pdFinishDate ? (
-                          <p className="text-xs text-primary-foreground/50 font-medium mt-2 print:text-gray-500">Single day</p>
+                          <p className="text-xs text-white/60 font-medium mt-2 print:text-gray-500">Single day</p>
                         ) : (
-                          <p className="text-xs text-primary-foreground/50 font-medium mt-2 print:text-gray-500">{formatUK(parseDate(s.pdStartDate))} → {formatUK(parseDate(s.pdFinishDate))}</p>
+                          <p className="text-xs text-white/60 font-medium mt-2 print:text-gray-500">{formatUK(parseDate(s.pdStartDate))} → {formatUK(parseDate(s.pdFinishDate))}</p>
                         )}
 
                         {(s.pdIncludeSubsistence || s.pdIncludePay) && (
-                          <div className="mt-6 pt-5 border-t border-primary-foreground/10 text-left space-y-2 print:border-gray-300">
+                          <div className="mt-6 pt-5 border-t border-white/10 text-left space-y-2 print:border-gray-300">
                             {s.pdIncludePay && (
                               <div className="flex justify-between items-center text-sm">
-                                <span className="text-primary-foreground/60 font-medium print:text-gray-600">Gross Pay ({paydays.totalDays} × {formatCurrencyIn(parseFloat(s.pdDayRate) || 0, 'GBP')})</span>
+                                <span className="text-white/70 font-medium print:text-gray-600">Gross Pay ({paydays.totalDays} × {formatCurrencyIn(parseFloat(s.pdDayRate) || 0, 'GBP')})</span>
                                 <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrencyIn(pdTotalGross, 'GBP')}</span>
                               </div>
                             )}
                             {s.pdIncludeSubsistence && s.pdSubsistenceRate && (
                               <div className="flex justify-between items-center text-sm">
-                                <span className="text-primary-foreground/60 font-medium print:text-gray-600">Subsistence ({paydays.totalSubDays}d)</span>
+                                <span className="text-white/70 font-medium print:text-gray-600">Subsistence ({paydays.totalSubDays}d)</span>
                                 <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrencyIn(paydays.totalSub || 0, 'GBP')}</span>
                               </div>
                             )}
@@ -1525,9 +1553,9 @@ export default function CalculatorPage() {
                               </div>
                             )}
                             {s.pdIncludePay && (
-                              <div className="flex justify-between items-center pt-2 mt-2 border-t border-primary-foreground/10 text-base print:border-gray-300">
+                              <div className="flex justify-between items-center pt-2 mt-2 border-t border-white/10 text-base print:border-gray-300">
                                 <span className="font-bold text-white print:text-black">Total Net Pay</span>
-                                <span className="font-mono font-bold text-chart-1 animate-in zoom-in-95 duration-200 tabular-nums" key={pdTotalNet}>{formatCurrencyIn(pdTotalNet, 'GBP')}</span>
+                                <span className="font-mono font-bold text-emerald-400 animate-in zoom-in-95 duration-200 tabular-nums" key={pdTotalNet}>{formatCurrencyIn(pdTotalNet, 'GBP')}</span>
                               </div>
                             )}
                           </div>
@@ -1535,52 +1563,52 @@ export default function CalculatorPage() {
                       </div>
 
                       <div className="space-y-3">
-                        <p className="text-xs font-bold uppercase tracking-widest text-primary-foreground/50 px-1 print:text-gray-600">Payment Schedule</p>
+                        <p className="text-xs font-bold uppercase tracking-widest text-white/70 px-1 print:text-gray-600">Payment Schedule</p>
                         {paydays.splits.map((split, idx) => (
-                          <div key={idx} className="bg-primary-foreground/10 rounded-xl overflow-hidden hover:bg-primary-foreground/20 transition-colors print:border print:border-gray-300 print:bg-white print:text-black print:break-inside-avoid">
-                            <div className="flex items-center justify-between px-4 py-3 border-b border-primary-foreground/10 print:border-gray-200">
+                          <div key={idx} className="bg-white/10 rounded-xl overflow-hidden hover:bg-white/15 transition-colors print:border print:border-gray-300 print:bg-white print:text-black print:break-inside-avoid">
+                            <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 print:border-gray-200">
                               <div className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-2">
                                 {s.pdPayrollType === 'fortnightly' ? (
                                   <span className="text-sm font-bold text-white print:text-black">{split.periodLabel}</span>
                                 ) : (
-                                  <span className="text-xs font-medium text-primary-foreground/50 print:text-gray-500">{formatUK(split.periodStart)} – {formatUK(split.periodEnd)}</span>
+                                  <span className="text-xs font-medium text-white/60 print:text-gray-500">{formatUK(split.periodStart)} – {formatUK(split.periodEnd)}</span>
                                 )}
                               </div>
                               <div className="flex items-center gap-3">
-                                {s.pdPayrollType === 'monthly' && <span className="text-sm font-bold text-blue-400 print:text-blue-600">{split.periodLabel}</span>}
-                                <span className="font-mono font-bold text-chart-1 text-base tabular-nums">{split.days % 1 === 0 ? split.days.toFixed(0) : formatNumber(split.days)} days</span>
+                                {s.pdPayrollType === 'monthly' && <span className="text-sm font-bold text-cyan-300 print:text-blue-600">{split.periodLabel}</span>}
+                                <span className="font-mono font-bold text-emerald-400 text-base tabular-nums">{split.days % 1 === 0 ? split.days.toFixed(0) : formatNumber(split.days)} days</span>
                               </div>
                             </div>
-                            <div className="grid grid-cols-2 divide-x divide-primary-foreground/10 print:divide-gray-200">
+                            <div className="grid grid-cols-2 divide-x divide-white/10 print:divide-gray-200">
                               <div className="px-4 py-2.5">
-                                <p className="text-xs text-primary-foreground/50 font-medium mb-0.5 print:text-gray-500">Cut-off</p>
+                                <p className="text-xs text-white/60 font-medium mb-0.5 print:text-gray-500">Cut-off</p>
                                 <p className="font-mono font-bold text-sm text-white print:text-black tabular-nums">{formatUK(split.cutoff)}</p>
                               </div>
                               <div className="px-4 py-2.5">
-                                <p className="text-xs text-primary-foreground/50 font-medium mb-0.5 print:text-gray-500">Payday</p>
-                                <p className="font-mono font-bold text-sm text-chart-1 print:text-black tabular-nums">{formatUK(split.payday)}</p>
+                                <p className="text-xs text-white/60 font-medium mb-0.5 print:text-gray-500">Payday</p>
+                                <p className="font-mono font-bold text-sm text-emerald-400 print:text-black tabular-nums">{formatUK(split.payday)}</p>
                               </div>
                             </div>
                             {(s.pdIncludePay || s.pdIncludeSubsistence) && (
-                              <div className="px-4 py-2.5 border-t border-primary-foreground/10 bg-primary-foreground/5 flex flex-col gap-1.5 print:border-gray-200 print:bg-gray-50">
+                              <div className="px-4 py-2.5 border-t border-white/10 bg-black/20 flex flex-col gap-1.5 print:border-gray-200 print:bg-gray-50">
                                 {s.pdIncludePay && (
                                   <div className="flex justify-between items-center text-xs">
-                                    <span className="text-primary-foreground/60 print:text-gray-600">Period Gross Pay</span>
+                                    <span className="text-white/75 print:text-gray-600">Period Gross Pay</span>
                                     <span className="font-mono font-bold text-white print:text-black tabular-nums">{formatCurrencyIn(split.days * (parseFloat(s.pdDayRate) || 0), 'GBP')}</span>
                                   </div>
                                 )}
                                 {s.pdIncludeSubsistence && s.pdSubsistenceRate && (
                                   <div className="flex justify-between items-center text-xs">
-                                    <div className="flex items-center gap-1.5 text-primary-foreground/60 print:text-gray-600">
+                                    <div className="flex items-center gap-1.5 text-white/75 print:text-gray-600">
                                       <span>Sub. Days:</span>
                                       <div className="relative flex items-center gap-1">
                                         <input 
                                           type="number" value={subDaysOverrides[idx] ?? ''} onChange={e => setSubDaysOverrides(prev => ({...prev, [idx]: e.target.value}))}
                                           placeholder={split.days.toString()} title="Override subsistence days" aria-label="Override subsistence days"
-                                          className="w-12 bg-background/30 border border-primary-foreground/20 rounded px-1 py-0.5 text-white print:text-black print:border-gray-300 text-center focus:outline-none focus:border-primary-foreground/50 transition-colors font-mono tabular-nums placeholder:text-primary-foreground/40 print:placeholder:text-gray-400"
+                                          className="w-12 bg-white/20 border border-white/30 rounded px-1 py-0.5 text-white print:text-black print:border-gray-300 text-center focus:outline-none focus:border-white transition-colors font-mono tabular-nums placeholder:text-white/40 print:placeholder:text-gray-400"
                                         />
                                         {subDaysOverrides[idx] !== undefined && (
-                                          <button onClick={() => setSubDaysOverrides(prev => { const newObj = {...prev}; delete newObj[idx]; return newObj; })} className="text-primary-foreground/40 hover:text-red-400 print:hidden transition-colors"><RotateCcw className="h-3 w-3" /></button>
+                                          <button onClick={() => setSubDaysOverrides(prev => { const newObj = {...prev}; delete newObj[idx]; return newObj; })} className="text-white/50 hover:text-red-400 print:hidden transition-colors"><RotateCcw className="h-3 w-3" /></button>
                                         )}
                                       </div>
                                     </div>
@@ -1606,23 +1634,23 @@ export default function CalculatorPage() {
                 <CollapsibleCard title="Assignment Details" icon={FileCheck} defaultOpen>
                   <div className="space-y-4">
                     <div className="space-y-2">
-                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Seafarer Name</label>
+                      <label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Seafarer Name</label>
                       <TextInput value={s.refSeafarerName} onChange={(v: string) => s.updateField('refSeafarerName', v)} placeholder="John Doe" />
                     </div>
                     <div className="space-y-2">
-                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Discipline</label>
+                      <label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Discipline</label>
                       <TextInput value={s.refDiscipline} onChange={(v: string) => s.updateField('refDiscipline', v)} placeholder="Chief Engineer" />
                     </div>
                     <div className="space-y-2">
-                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Company</label>
+                      <label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Company</label>
                       <TextInput value={s.refCompany} onChange={(v: string) => s.updateField('refCompany', v)} placeholder="Oceanic Shipping Ltd." />
                     </div>
                     <div className="space-y-2">
-                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Vessel</label>
+                      <label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Vessel</label>
                       <TextInput value={s.refVessel} onChange={(v: string) => s.updateField('refVessel', v)} placeholder="MV Navigator" />
                     </div>
                     <div className="space-y-2">
-                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Dates of Assignment</label>
+                      <label className="block text-xs font-bold text-muted-foreground dark:text-gray-400 uppercase tracking-wide">Dates of Assignment</label>
                       <TextInput value={s.refDates} onChange={(v: string) => s.updateField('refDates', v)} placeholder="01 Jan 2026 - 28 Jan 2026" />
                     </div>
                   </div>
@@ -1632,14 +1660,14 @@ export default function CalculatorPage() {
                   <div className="space-y-4">
                     {RATING_FIELDS.map((field) => (
                       <div key={field.key} className="space-y-2">
-                        <label className="block text-xs font-bold text-foreground">{field.label}</label>
+                        <label className="block text-xs font-bold text-foreground dark:text-white">{field.label}</label>
                         <select 
-                          className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-bold"
+                          className="w-full px-4 py-2.5 bg-input/40 border border-input text-foreground dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-bold"
                           value={s[field.key as keyof AppState] as string} 
                           onChange={(e) => s.updateField(field.key as keyof AppState, e.target.value)}
                         >
                           {RATING_OPTIONS.map(opt => (
-                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            <option key={opt.value} value={opt.value} className="bg-background text-foreground dark:bg-slate-900 dark:text-white">{opt.label}</option>
                           ))}
                         </select>
                       </div>
@@ -1650,7 +1678,7 @@ export default function CalculatorPage() {
                 <CollapsibleCard title="Policies & Comments" icon={FileText} defaultOpen={false}>
                   <div className="space-y-6">
                     <div className="space-y-3">
-                      <label className="block text-xs font-bold text-foreground">Adhere to Alcohol & Drugs Policy?</label>
+                      <label className="block text-xs font-bold text-foreground dark:text-white">Adhere to Alcohol & Drugs Policy?</label>
                       <SegmentedControl 
                         value={s.refDrugsPolicy} 
                         onChange={(v: string) => s.updateField('refDrugsPolicy', v)} 
@@ -1659,7 +1687,7 @@ export default function CalculatorPage() {
                       />
                     </div>
                     <div className="space-y-3">
-                      <label className="block text-xs font-bold text-foreground">Recommended for Re-Hire?</label>
+                      <label className="block text-xs font-bold text-foreground dark:text-white">Recommended for Re-Hire?</label>
                       <SegmentedControl 
                         value={s.refReHire} 
                         onChange={(v: string) => s.updateField('refReHire', v)} 
@@ -1668,9 +1696,9 @@ export default function CalculatorPage() {
                       />
                     </div>
                     <div className="space-y-2 pt-2 border-t border-border/40">
-                      <label className="block text-xs font-bold text-foreground">Additional Comments</label>
+                      <label className="block text-xs font-bold text-foreground dark:text-white">Additional Comments</label>
                       <textarea 
-                        className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium resize-y min-h-[120px]"
+                        className="w-full px-4 py-3 bg-input/40 border border-input text-foreground dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium resize-y min-h-[120px] placeholder:text-muted-foreground"
                         placeholder="Enter any additional feedback here..."
                         value={s.refComments}
                         onChange={(e) => s.updateField('refComments', e.target.value)}
@@ -1680,10 +1708,10 @@ export default function CalculatorPage() {
                 </CollapsibleCard>
               </div>
 
-              <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
+              <div className="lg:col-span-7 bg-slate-900 text-white border border-slate-800 rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
                 <div className="p-8 md:p-10 flex-grow relative z-0">
                   <div className="flex items-center justify-between gap-4 mb-8 print:hidden">
-                    <h2 className="text-xl font-bold">Appraisal Preview</h2>
+                    <h2 className="text-xl font-bold text-white">Appraisal Preview</h2>
                     <div className="flex gap-2">
                        <ActionButton onClick={copyReferenceSummary} icon={Copy} label="Copy" />
                        <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
@@ -1692,25 +1720,25 @@ export default function CalculatorPage() {
                   </div>
 
                   {/* Formal Printable Document Area */}
-                  <div className="bg-primary-foreground/5 p-8 rounded-xl print:p-0 print:bg-transparent border border-primary-foreground/10 print:border-none">
-                     <h1 className="text-2xl font-bold text-center mb-6 uppercase tracking-widest border-b border-primary-foreground/20 pb-4 print:border-gray-300">Seafarer Feedback Form</h1>
+                  <div className="bg-white/5 p-8 rounded-xl print:p-0 print:bg-transparent border border-white/10 print:border-none">
+                     <h1 className="text-2xl font-bold text-center mb-6 uppercase tracking-widest border-b border-white/20 pb-4 print:border-gray-300 text-white">Seafarer Feedback Form</h1>
 
-                     <div className="grid grid-cols-1 sm:grid-cols-[1fr_2fr] gap-y-4 text-sm mb-10">
-                       <div className="font-bold text-primary-foreground/70 print:text-gray-600">Seafarer Name:</div><div className="font-bold">{s.refSeafarerName || '-'}</div>
-                       <div className="font-bold text-primary-foreground/70 print:text-gray-600">Discipline:</div><div className="font-bold">{s.refDiscipline || '-'}</div>
-                       <div className="font-bold text-primary-foreground/70 print:text-gray-600">Company:</div><div className="font-bold">{s.refCompany || '-'}</div>
-                       <div className="font-bold text-primary-foreground/70 print:text-gray-600">Vessel:</div><div className="font-bold">{s.refVessel || '-'}</div>
-                       <div className="font-bold text-primary-foreground/70 print:text-gray-600">Assignment Dates:</div><div className="font-bold">{s.refDates || '-'}</div>
+                     <div className="grid grid-cols-1 sm:grid-cols-[1fr_2fr] gap-y-4 text-sm mb-10 text-white">
+                       <div className="font-bold text-white/70 print:text-gray-600">Seafarer Name:</div><div className="font-bold">{s.refSeafarerName || '-'}</div>
+                       <div className="font-bold text-white/70 print:text-gray-600">Discipline:</div><div className="font-bold">{s.refDiscipline || '-'}</div>
+                       <div className="font-bold text-white/70 print:text-gray-600">Company:</div><div className="font-bold">{s.refCompany || '-'}</div>
+                       <div className="font-bold text-white/70 print:text-gray-600">Vessel:</div><div className="font-bold">{s.refVessel || '-'}</div>
+                       <div className="font-bold text-white/70 print:text-gray-600">Assignment Dates:</div><div className="font-bold">{s.refDates || '-'}</div>
                      </div>
 
-                     <h3 className="text-lg font-bold border-b border-primary-foreground/20 pb-2 mb-4 print:border-gray-300">Performance Assessment</h3>
+                     <h3 className="text-lg font-bold border-b border-white/20 pb-2 mb-4 print:border-gray-300 text-white">Performance Assessment</h3>
                      <div className="space-y-2 mb-10">
                         {RATING_FIELDS.map(f => {
                            const fieldValue = s[f.key as keyof AppState] as string;
                            return (
-                             <div key={f.key} className="flex justify-between items-center text-sm border-b border-primary-foreground/5 pb-2 print:border-gray-200">
-                                <span className="font-medium text-primary-foreground/80 print:text-gray-700">{f.label}</span>
-                                <span className={cn("font-bold text-right", !fieldValue && "text-primary-foreground/30 print:text-gray-400")}>
+                             <div key={f.key} className="flex justify-between items-center text-sm border-b border-white/10 pb-2 print:border-gray-200">
+                                <span className="font-medium text-white/80 print:text-gray-700">{f.label}</span>
+                                <span className={cn("font-bold text-right", !fieldValue && "text-white/40 print:text-gray-400")}>
                                   {fieldValue || '-'}
                                 </span>
                              </div>
@@ -1718,22 +1746,22 @@ export default function CalculatorPage() {
                         })}
                      </div>
 
-                     <h3 className="text-lg font-bold border-b border-primary-foreground/20 pb-2 mb-4 print:border-gray-300">Compliance & Re-Hire</h3>
+                     <h3 className="text-lg font-bold border-b border-white/20 pb-2 mb-4 print:border-gray-300 text-white">Compliance & Re-Hire</h3>
                      <div className="space-y-2 mb-8">
-                         <div className="flex justify-between items-center text-sm border-b border-primary-foreground/5 pb-2 print:border-gray-200">
-                              <span className="font-medium text-primary-foreground/80 print:text-gray-700">Adhere to Alcohol & Drugs Policy:</span>
-                              <span className={cn("font-bold", !s.refDrugsPolicy && "text-primary-foreground/30 print:text-gray-400")}>{s.refDrugsPolicy || '-'}</span>
+                         <div className="flex justify-between items-center text-sm border-b border-white/10 pb-2 print:border-gray-200">
+                              <span className="font-medium text-white/80 print:text-gray-700">Adhere to Alcohol & Drugs Policy:</span>
+                              <span className={cn("font-bold", !s.refDrugsPolicy && "text-white/40 print:text-gray-400")}>{s.refDrugsPolicy || '-'}</span>
                          </div>
-                         <div className="flex justify-between items-center text-sm border-b border-primary-foreground/5 pb-2 print:border-gray-200">
-                              <span className="font-medium text-primary-foreground/80 print:text-gray-700">Recommended for Re-Hire:</span>
-                              <span className={cn("font-bold", !s.refReHire && "text-primary-foreground/30 print:text-gray-400")}>{s.refReHire || '-'}</span>
+                         <div className="flex justify-between items-center text-sm border-b border-white/10 pb-2 print:border-gray-200">
+                              <span className="font-medium text-white/80 print:text-gray-700">Recommended for Re-Hire:</span>
+                              <span className={cn("font-bold", !s.refReHire && "text-white/40 print:text-gray-400")}>{s.refReHire || '-'}</span>
                          </div>
                      </div>
 
                      {s.refComments && (
                        <div className="mt-8">
-                         <h3 className="text-lg font-bold border-b border-primary-foreground/20 pb-2 mb-4 print:border-gray-300">Additional Comments</h3>
-                         <p className="text-sm whitespace-pre-wrap leading-relaxed bg-primary-foreground/5 p-4 rounded-xl print:p-0 print:bg-transparent">{s.refComments}</p>
+                         <h3 className="text-lg font-bold border-b border-white/20 pb-2 mb-4 print:border-gray-300 text-white">Additional Comments</h3>
+                         <p className="text-sm whitespace-pre-wrap leading-relaxed bg-white/5 p-4 rounded-xl print:p-0 print:bg-transparent text-white/90">{s.refComments}</p>
                        </div>
                      )}
                   </div>
@@ -1762,9 +1790,9 @@ interface LineItemProps {
 }
 const LineItem = React.memo(function LineItem({ label, value, isBold = false, currency = 'GBP' }: LineItemProps) {
   return (
-    <div className={cn('flex items-center justify-between py-1 group', isBold ? 'text-white font-bold print:text-black' : 'text-primary-foreground/80 hover:text-white transition-colors print:text-gray-700')}>
+    <div className={cn('flex items-center justify-between py-1 group', isBold ? 'text-white font-bold print:text-black' : 'text-white/80 hover:text-white transition-colors print:text-gray-700')}>
       <span className="text-sm font-medium">{label}</span>
-      <span className={cn('font-mono tracking-tight tabular-nums transition-all', isBold ? 'text-base font-bold' : 'text-sm font-semibold')}>{formatCurrencyIn(value, currency)}</span>
+      <span className={cn('font-mono tracking-tight tabular-nums transition-all', isBold ? 'text-base font-bold text-emerald-400' : 'text-sm font-semibold')}>{formatCurrencyIn(value, currency)}</span>
     </div>
   );
 });
@@ -1778,18 +1806,18 @@ interface ProjectionCardProps {
 }
 const ProjectionCard = React.memo(function ProjectionCard({ label, days, charge, fee, currency = 'GBP' }: ProjectionCardProps) {
   return (
-    <div className="bg-primary-foreground/5 p-5 rounded-xl hover:bg-primary-foreground/10 transition-colors print:border print:border-gray-200 print:bg-white">
-      <div className="text-sm font-bold text-white mb-4 flex items-center justify-between border-b border-primary-foreground/10 pb-2 print:text-black">
+    <div className="bg-white/5 p-5 rounded-xl hover:bg-white/10 transition-colors print:border print:border-gray-200 print:bg-white">
+      <div className="text-sm font-bold text-white mb-4 flex items-center justify-between border-b border-white/10 pb-2 print:text-black">
         {label}
-        <span className="text-xs font-medium text-primary-foreground/60 bg-primary-foreground/10 px-2 py-0.5 rounded-md print:bg-gray-100 print:text-gray-600">{days} Days</span>
+        <span className="text-xs font-medium text-white/70 bg-white/10 px-2 py-0.5 rounded-md print:bg-gray-100 print:text-gray-600">{days} Days</span>
       </div>
       <div className="space-y-2.5">
         <div className="flex justify-between text-sm">
-          <span className="text-primary-foreground/70 font-medium print:text-gray-600">Charge</span>
-          <span className="font-mono font-bold text-chart-1 tabular-nums transition-all">{formatCurrencyIn(charge * days, currency)}</span>
+          <span className="text-white/70 font-medium print:text-gray-600">Charge</span>
+          <span className="font-mono font-bold text-emerald-400 tabular-nums transition-all">{formatCurrencyIn(charge * days, currency)}</span>
         </div>
-        <div className="flex justify-between text-sm pt-2 border-t border-primary-foreground/10 print:border-gray-200">
-          <span className="text-primary-foreground/70 font-medium print:text-gray-600">Fee Margin</span>
+        <div className="flex justify-between text-sm pt-2 border-t border-white/10 print:border-gray-200">
+          <span className="text-white/70 font-medium print:text-gray-600">Fee Margin</span>
           <span className="font-mono font-bold text-white print:text-black tabular-nums transition-all">{formatCurrencyIn(fee * days, currency)}</span>
         </div>
       </div>
@@ -1803,31 +1831,31 @@ interface AssumptionsAccordionProps {
 }
 function AssumptionsAccordion({ maritime = false, fiscalRates }: AssumptionsAccordionProps) {
   return (
-    <details className="group [&_summary::-webkit-details-marker]:hidden bg-card border border-card-border rounded-2xl shadow-sm transition-all overflow-hidden print:hidden">
-      <summary className="flex items-center justify-between cursor-pointer font-bold text-sm p-6 hover:bg-input/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+    <details className="group [&_summary::-webkit-details-marker]:hidden bg-card text-card-foreground border border-card-border rounded-2xl shadow-sm transition-all overflow-hidden print:hidden">
+      <summary className="flex items-center justify-between cursor-pointer font-bold text-sm p-6 hover:bg-input/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary text-foreground dark:text-white">
         Calculation Assumptions
         <ChevronDown className="h-4 w-4 text-muted-foreground group-open:rotate-180 transition-transform duration-300" />
       </summary>
-      <div className="px-6 pb-6 pt-0 space-y-4 text-xs text-muted-foreground font-medium border-t border-border/40 mt-2">
+      <div className="px-6 pb-6 pt-0 space-y-4 text-xs text-muted-foreground dark:text-gray-300 font-medium border-t border-border/40 mt-2">
         {maritime ? (
           <>
             <div className="space-y-1">
-              <strong className="text-foreground block">Seafarer NI Exemption</strong>
+              <strong className="text-foreground dark:text-white block">Seafarer NI Exemption</strong>
               <p>Standard NI is calculated at {fiscalRates.employerNI * 100}%. When "Seafarer Exemption" is toggled, Employer NI evaluates to 0, assuming the vessel operates fully outside the UK Continental Shelf (UKCS) or is a non-UK flagged vessel avoiding UK NIC obligations.</p>
             </div>
             <div className="space-y-1">
-              <strong className="text-foreground block">Subsistence Rules (Travel vs Victualling)</strong>
+              <strong className="text-foreground dark:text-white block">Subsistence Rules (Travel vs Victualling)</strong>
               <p>Travel day subsistence is always paid at full rate, so for a 0.5 day, it is still a full subsistence payment (e.g. two 0.5 travel days = 2 full days of subsistence). Onboard subsistence is applied to working days.</p>
             </div>
           </>
         ) : (
           <div className="space-y-1">
-            <strong className="text-foreground block">Employer NI Calculation</strong>
+            <strong className="text-foreground dark:text-white block">Employer NI Calculation</strong>
             <p>Perm NI informational calculation assumes {fiscalRates.permNI * 100}% over the £{fiscalRates.permNIThreshold} secondary threshold.</p>
           </div>
         )}
         <div className="space-y-1">
-          <strong className="text-foreground block">Payment Days & Payroll</strong>
+          <strong className="text-foreground dark:text-white block">Payment Days & Payroll</strong>
           <p>Monthly payday lands on the 28th, moving backward to the previous working day if falling on a weekend/bank holiday. Subsistence days per period automatically match the payable days, but can be manually overridden in the summary breakdown (e.g., deducting 1 day for unpaid travel).</p>
         </div>
       </div>
