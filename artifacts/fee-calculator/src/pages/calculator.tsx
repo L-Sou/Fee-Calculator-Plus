@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { PieChart, Pie, Cell, Tooltip as ChartTooltip, ResponsiveContainer } from 'recharts';
@@ -92,6 +92,7 @@ const RATING_OPTIONS = [
   { label: 'Good', value: 'Good' },
   { label: 'Fair', value: 'Fair' },
   { label: 'Poor', value: 'Poor' },
+  { label: 'N/A', value: 'N/A' },
 ];
 
 const RATING_FIELDS = [
@@ -228,10 +229,12 @@ function calculatePerm(params: PermParams, fiscalRates: FiscalRates, fxRate: num
   const pSalary = params.pCurrency === 'GBP' ? pSalaryInput : (fxRate !== null ? pSalaryInput * fxRate : 0);
   const pFeePct = Math.max(0, parseFloat(params.dbPlacementFee) || 0);
 
+  // Feature: Invoice in Origin Currency
   const pPlacementFee = params.invoiceInOrigin 
     ? pSalaryInput * (pFeePct / 100) 
     : (pFxReady ? pSalary * (pFeePct / 100) : 0);
 
+  // NI is always a UK tax on the GBP equivalent salary
   const pEmployerNI = params.includePermNI ? Math.max(0, (pSalary - fiscalRates.permNIThreshold) * fiscalRates.permNI) : 0;
 
   return { pSalaryInput, pFxReady, pSalary, pFeePct, pPlacementFee, pEmployerNI, pTotalCost: pPlacementFee + (params.invoiceInOrigin ? 0 : pEmployerNI) };
@@ -402,7 +405,7 @@ const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPre
   includeContingency: false, contingencyType: 'percentage', contingencyValue: '', includeNI: true, niMode: 'base',
   seafarerExempt: false, includeSubsistence: false, subsistenceTravel: '50', subsistenceOnboard: '0', subsistenceInFee: true,
   includeTrip: false, workingDays: '28', travelDays: '2', travelDayFull: false, travelFeeType: 'percentage', travelFee: '15',
-  mobTravel: '', mobVisas: '', mobAgent: '', logisticsInFee: false, salary: '50000', placementFee: '20', includePermNI: false,
+  mobTravel: '', mobVisas: '', mobAgent: '', logisticsInFee: false, salary: '', placementFee: '', includePermNI: false,
   pCurrency: 'GBP', invoiceInOrigin: false, pFxDate: new Date().toISOString().slice(0, 10), pdPayrollType: 'monthly',
   pdStartDate: '', pdStartMode: 'full', pdStartCustomVal: '0.5', pdFinishDate: '', pdFinishMode: 'full', pdFinishCustomVal: '0.5',
   pdIncludeSubsistence: false, pdSubsistenceRate: '', pdIncludePay: false, pdDayRate: '', pdAdvance: '',
@@ -420,7 +423,15 @@ const useStore = create<AppState>()(
       updateField: (field, value) => set({ [field]: value }),
       resetToDefaults: () => set((state) => ({ ...defaultState, savedPresets: state.savedPresets }))
     }),
-    { name: 'maritime-calculator-store' }
+    { 
+      name: 'maritime-calculator-store',
+      version: 1, // <--- ADD THIS LINE
+      migrate: (persistedState: any, version: number) => {
+        // If the version in the browser doesn't match the version in the code,
+        // it automatically wipes the old broken state and starts fresh!
+        return persistedState as AppState;
+      }
+    }
   )
 );
 
@@ -510,18 +521,18 @@ function useFxRate(currency: CurrencyCode, baseDate: string) {
 // ─── 4. Reusable Sub-components ───────────────────────────────────────────────
 
 const TextInput = ({ value, onChange, placeholder, ariaLabel }: any) => (
-  <input type="text" value={value} onChange={e => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
+  <input type="text" value={value} onChange={(e) => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
 );
 
 const NumInput = ({ id, value, onChange, prefix, suffix, placeholder = '0.00', 'aria-label': ariaLabel }: any) => (
   <div className="relative group flex-1">
     {prefix && <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono pointer-events-none transition-colors group-focus-within:text-primary">{prefix}</span>}
-    <input id={id} type="number" value={value} onChange={e => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} min="0" className={cn('w-full py-3 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200 tabular-nums text-base font-medium', prefix ? (prefix.length > 1 ? 'pl-16 pr-4' : 'pl-10 pr-4') : suffix ? 'pl-4 pr-10' : 'px-4')} />
+    <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} aria-label={ariaLabel} placeholder={placeholder} min="0" className={cn('w-full py-3 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200 tabular-nums text-base font-medium', prefix ? (prefix.length > 1 ? 'pl-16 pr-4' : 'pl-10 pr-4') : suffix ? 'pl-4 pr-10' : 'px-4')} />
     {suffix && <span className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground font-mono transition-colors group-focus-within:text-primary">{suffix}</span>}
   </div>
 );
 
-const SegmentedControl = ({ value, onChange, options, ariaLabel }: { value: string, onChange: (v: any) => void, options: {label: string, value: string}[], ariaLabel: string }) => (
+const SegmentedControl = ({ value, onChange, options, ariaLabel }: { value: string, onChange: (v: string) => void, options: {label: string, value: string}[], ariaLabel: string }) => (
   <div className="flex items-center gap-1 p-1 bg-input/40 border border-input rounded-xl w-full" role="radiogroup" aria-label={ariaLabel}>
     {options.map(opt => (
       <label key={opt.value} className={cn('flex-1 text-center cursor-pointer px-3 py-1.5 rounded-lg text-sm font-bold transition-all duration-300 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary', value === opt.value ? 'bg-primary text-primary-foreground shadow scale-100' : 'text-muted-foreground hover:text-foreground scale-95')}>
@@ -689,7 +700,7 @@ export default function CalculatorPage() {
     rows += `"Vessel","${s.refVessel}"\n`;
     rows += `"Dates of Assignment","${s.refDates}"\n`;
     RATING_FIELDS.forEach(f => {
-       rows += `"${f.label}","${s[f.key as keyof AppState] || ''}"\n`;
+       rows += `"${f.label}","${(s[f.key as keyof AppState] as string) || ''}"\n`;
     });
     rows += `"Adhere to Alcohol & Drugs Policy","${s.refDrugsPolicy}"\n`;
     rows += `"Recommended for Re-Hire","${s.refReHire}"\n`;
@@ -802,7 +813,7 @@ export default function CalculatorPage() {
 
     text += `Performance Assessment:\n`;
     RATING_FIELDS.forEach(f => {
-       text += `- ${f.label}: ${s[f.key as keyof AppState] || '-'}\n`;
+       text += `- ${f.label}: ${(s[f.key as keyof AppState] as string) || '-'}\n`;
     });
 
     text += `\nCompliance & Re-Hire:\n`;
@@ -868,7 +879,7 @@ export default function CalculatorPage() {
                  {Object.keys(s.savedPresets).map(p => <option key={p} value={p}>{p}</option>)}
                </select>
                <div className="flex gap-1 items-center">
-                 <input type="text" placeholder="Preset name" value={newPresetName} onChange={e=>setNewPresetName(e.target.value)} className="px-3 py-2 bg-background border border-input rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none w-32" />
+                 <input type="text" placeholder="Preset name" value={newPresetName} onChange={(e)=>setNewPresetName(e.target.value)} className="px-3 py-2 bg-background border border-input rounded-lg text-sm font-medium focus:ring-2 focus:ring-primary focus:outline-none w-32" />
                  <button onClick={savePreset} className="p-2 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity" title="Save Preset"><Save className="h-4 w-4" /></button>
                </div>
             </div>
@@ -892,7 +903,7 @@ export default function CalculatorPage() {
                   <div className="space-y-4 mb-4">
                     <label className="block text-sm font-bold">Currency & Crew</label>
                     <div className="flex gap-2">
-                      <SegmentedControl value={s.cCurrency} onChange={v => s.updateField('cCurrency', v)} options={CURRENCIES.map(c => ({label: c, value: c}))} ariaLabel="Currency" />
+                      <SegmentedControl value={s.cCurrency} onChange={(v: string) => s.updateField('cCurrency', v as CurrencyCode)} options={CURRENCIES.map(c => ({label: c, value: c}))} ariaLabel="Currency" />
                     </div>
                     <AnimatedSection show={s.cCurrency !== 'GBP'}>
                       <div className="space-y-3 p-4 bg-input/30 border border-input rounded-xl mb-6">
@@ -901,7 +912,7 @@ export default function CalculatorPage() {
                         </div>
                         <div className="space-y-1">
                           <label htmlFor="c-fx-date" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Placement / Start Date</label>
-                          <input id="c-fx-date" type="date" value={s.cFxDate} onChange={e => s.updateField('cFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
+                          <input id="c-fx-date" type="date" value={s.cFxDate} onChange={(e) => s.updateField('cFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
                         </div>
                         <div className="flex items-center justify-between rounded-lg bg-card/60 px-3 py-2.5">
                           <div className="text-sm font-medium">
@@ -927,13 +938,13 @@ export default function CalculatorPage() {
                     </AnimatedSection>
                     <div className="flex items-center justify-between gap-4 p-3 bg-input/30 rounded-xl border border-input">
                       <label className="text-sm font-bold flex items-center gap-2"><Users className="h-4 w-4"/> Crew Size (Multiplier)</label>
-                      <input type="number" min="1" value={s.crewSize} onChange={e => s.updateField('crewSize', e.target.value)} className="w-20 px-3 py-1.5 bg-background border border-input rounded-lg font-mono text-center focus:ring-2 focus:ring-primary outline-none" />
+                      <input type="number" min="1" value={s.crewSize} onChange={(e) => s.updateField('crewSize', e.target.value)} className="w-20 px-3 py-1.5 bg-background border border-input rounded-lg font-mono text-center focus:ring-2 focus:ring-primary outline-none" />
                     </div>
                   </div>
 
                   <div className="space-y-2">
                     <label className="block text-sm font-bold">Consolidated Rate — Seafarer Pay</label>
-                    <NumInput value={s.consolidatedRate} onChange={v => s.updateField('consolidatedRate', v)} prefix={curSym(s.cCurrency)} />
+                    <NumInput value={s.consolidatedRate} onChange={(v: string) => s.updateField('consolidatedRate', v)} prefix={curSym(s.cCurrency)} />
                   </div>
 
                   <div className="space-y-3 pt-2">
@@ -942,21 +953,21 @@ export default function CalculatorPage() {
                         <label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includePension', !s.includePension)}>Include Pension</label>
                         <p className="text-xs text-muted-foreground font-medium">Standard {activeFiscalRates.pension * 100}% addition</p>
                       </div>
-                      <Switch checked={s.includePension} onCheckedChange={v => s.updateField('includePension', v)} />
+                      <Switch checked={s.includePension} onCheckedChange={(v: boolean) => s.updateField('includePension', v)} />
                     </div>
                     <div className="flex justify-between group">
                       <div className="space-y-1 pr-4">
                         <label className="text-sm font-bold flex items-center cursor-pointer" onClick={() => s.updateField('includeAppyLevy', !s.includeAppyLevy)}>Include Apprenticeship Levy <Tooltip text="A 0.5% tax on large employers to fund apprenticeship training." /></label>
                         <p className="text-xs text-muted-foreground font-medium">Standard {activeFiscalRates.apprenticeshipLevy * 100}% addition</p>
                       </div>
-                      <Switch checked={s.includeAppyLevy} onCheckedChange={v => s.updateField('includeAppyLevy', v)} />
+                      <Switch checked={s.includeAppyLevy} onCheckedChange={(v: boolean) => s.updateField('includeAppyLevy', v)} />
                     </div>
                     <div className="space-y-2">
-                      <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includeContingency', !s.includeContingency)}>Add Contingency</label><Switch checked={s.includeContingency} onCheckedChange={v => s.updateField('includeContingency', v)} /></div>
+                      <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includeContingency', !s.includeContingency)}>Add Contingency</label><Switch checked={s.includeContingency} onCheckedChange={(v: boolean) => s.updateField('includeContingency', v)} /></div>
                       <AnimatedSection show={s.includeContingency}>
                         <div className="flex items-center gap-2 pt-1">
-                           <div className="w-24"><SegmentedControl value={s.contingencyType} onChange={v => s.updateField('contingencyType', v)} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Contingency Type" /></div>
-                           <NumInput value={s.contingencyValue} onChange={v => s.updateField('contingencyValue', v)} prefix={s.contingencyType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.contingencyType === 'percentage' ? '%' : undefined} />
+                           <div className="w-24"><SegmentedControl value={s.contingencyType} onChange={(v: string) => s.updateField('contingencyType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Contingency Type" /></div>
+                           <NumInput value={s.contingencyValue} onChange={(v: string) => s.updateField('contingencyValue', v)} prefix={s.contingencyType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.contingencyType === 'percentage' ? '%' : undefined} />
                         </div>
                       </AnimatedSection>
                     </div>
@@ -965,17 +976,17 @@ export default function CalculatorPage() {
                   <div className="space-y-2 pt-4 border-t border-border/60 mt-4">
                     <div className="flex items-center justify-between">
                       <label className="block text-sm font-bold">Management Fee</label>
-                      <div className="w-32"><SegmentedControl value={s.feeType} onChange={v => s.updateField('feeType', v)} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Fee Type" /></div>
+                      <div className="w-32"><SegmentedControl value={s.feeType} onChange={(v: string) => s.updateField('feeType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Fee Type" /></div>
                     </div>
-                    <NumInput value={s.margin} onChange={v => s.updateField('margin', v)} prefix={s.feeType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.feeType === 'percentage' ? '%' : undefined} />
+                    <NumInput value={s.margin} onChange={(v: string) => s.updateField('margin', v)} prefix={s.feeType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.feeType === 'percentage' ? '%' : undefined} />
                   </div>
 
                   <div className="pt-4 space-y-4 border-t border-border/60 mt-4">
-                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includeNI', !s.includeNI)}>Include Employer's NI</label><Switch checked={s.includeNI} onCheckedChange={v => s.updateField('includeNI', v)} /></div>
+                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includeNI', !s.includeNI)}>Include Employer's NI</label><Switch checked={s.includeNI} onCheckedChange={(v: boolean) => s.updateField('includeNI', v)} /></div>
                     <AnimatedSection show={s.includeNI}>
                       <div className="space-y-3 bg-amber-500/5 p-4 rounded-xl border border-amber-500/20">
-                        <SegmentedControl value={s.niMode} onChange={v => s.updateField('niMode', v)} options={[{label: 'Base Rate', value: 'base'}, {label: 'Total Amount', value: 'total'}]} ariaLabel="NI Mode" />
-                        <div className="flex justify-between items-center pt-2"><label className="text-sm font-bold text-amber-600 dark:text-amber-400">Seafarer Exemption <Tooltip text="UK Continental Shelf. Vessels operating wholly outside this may be exempt from Employer's NI." /></label><Switch checked={s.seafarerExempt} onCheckedChange={v => s.updateField('seafarerExempt', v)} /></div>
+                        <SegmentedControl value={s.niMode} onChange={(v: string) => s.updateField('niMode', v as 'base' | 'total')} options={[{label: 'Base Rate', value: 'base'}, {label: 'Total Amount', value: 'total'}]} ariaLabel="NI Mode" />
+                        <div className="flex justify-between items-center pt-2"><label className="text-sm font-bold text-amber-600 dark:text-amber-400">Seafarer Exemption <Tooltip text="UK Continental Shelf. Vessels operating wholly outside this may be exempt from Employer's NI." /></label><Switch checked={s.seafarerExempt} onCheckedChange={(v: boolean) => s.updateField('seafarerExempt', v)} /></div>
                       </div>
                     </AnimatedSection>
                   </div>
@@ -987,38 +998,38 @@ export default function CalculatorPage() {
                       Enable Subsistence
                       <Tooltip text="Food and provisions provided onboard. Typically £0 as covered by the vessel." />
                     </label>
-                    <Switch checked={s.includeSubsistence} onCheckedChange={(v) => { s.updateField('includeSubsistence', v); if (!v) s.updateField('subsistenceInFee', false); }} />
+                    <Switch checked={s.includeSubsistence} onCheckedChange={(v: boolean) => { s.updateField('includeSubsistence', v); if (!v) s.updateField('subsistenceInFee', false); }} />
                   </div>
                   <AnimatedSection show={s.includeSubsistence} className="pt-3 space-y-5 border-t border-border/40 mt-3">
                     <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel</label><NumInput value={s.subsistenceTravel} onChange={v => s.updateField('subsistenceTravel', v)} prefix={curSym(s.cCurrency)} /></div>
-                      <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Onboard</label><NumInput value={s.subsistenceOnboard} onChange={v => s.updateField('subsistenceOnboard', v)} prefix={curSym(s.cCurrency)} /></div>
+                      <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel</label><NumInput value={s.subsistenceTravel} onChange={(v: string) => s.updateField('subsistenceTravel', v)} prefix={curSym(s.cCurrency)} /></div>
+                      <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Onboard</label><NumInput value={s.subsistenceOnboard} onChange={(v: string) => s.updateField('subsistenceOnboard', v)} prefix={curSym(s.cCurrency)} /></div>
                     </div>
-                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer" onClick={() => s.includeSubsistence && s.updateField('subsistenceInFee', !s.subsistenceInFee)}>Apply margin to subsistence</label><Switch checked={s.subsistenceInFee} onCheckedChange={v => s.updateField('subsistenceInFee', v)} disabled={!s.includeSubsistence} /></div>
+                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer" onClick={() => s.includeSubsistence && s.updateField('subsistenceInFee', !s.subsistenceInFee)}>Apply margin to subsistence</label><Switch checked={s.subsistenceInFee} onCheckedChange={(v: boolean) => s.updateField('subsistenceInFee', v)} disabled={!s.includeSubsistence} /></div>
                   </AnimatedSection>
                 </CollapsibleCard>
 
                 <CollapsibleCard title="Hitch & Logistics Scheduler" icon={Anchor} defaultOpen={false}>
-                   <div className="flex justify-between"><label className="text-sm font-bold">Enable Hitch Scheduler</label><Switch checked={s.includeTrip} onCheckedChange={v => s.updateField('includeTrip', v)} /></div>
+                   <div className="flex justify-between"><label className="text-sm font-bold">Enable Hitch Scheduler</label><Switch checked={s.includeTrip} onCheckedChange={(v: boolean) => s.updateField('includeTrip', v)} /></div>
                    <AnimatedSection show={s.includeTrip} className="pt-4 space-y-4 border-t border-border/40 mt-3">
-                     <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Days Onboard</label><NumInput value={s.workingDays} onChange={v => s.updateField('workingDays', v)} placeholder="Working Days" /></div>
+                     <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Days Onboard</label><NumInput value={s.workingDays} onChange={(v: string) => s.updateField('workingDays', v)} placeholder="Working Days" /></div>
                      <div className="grid grid-cols-2 gap-4 pt-4 border-t border-border/50">
-                       <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel Days</label><NumInput value={s.travelDays} onChange={v => s.updateField('travelDays', v)} placeholder="Travel Days" /></div>
-                       <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Charge Rate</label><SegmentedControl value={s.travelDayFull ? 'full' : 'half'} onChange={v => s.updateField('travelDayFull', v === 'full')} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full rate', value: 'full'}]} ariaLabel="Travel Rate" /></div>
+                       <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel Days</label><NumInput value={s.travelDays} onChange={(v: string) => s.updateField('travelDays', v)} placeholder="Travel Days" /></div>
+                       <div className="space-y-2"><label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Charge Rate</label><SegmentedControl value={s.travelDayFull ? 'full' : 'half'} onChange={(v: string) => s.updateField('travelDayFull', v === 'full')} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full rate', value: 'full'}]} ariaLabel="Travel Rate" /></div>
                      </div>
                      <div className="space-y-3 pt-4 border-t border-border/50">
-                       <div className="flex items-center justify-between"><label className="block text-sm font-bold">Travel & Logistics Costs</label><div className="flex items-center gap-2"><label className="text-xs font-bold text-muted-foreground cursor-pointer" onClick={() => s.updateField('logisticsInFee', !s.logisticsInFee)}>Add Travel Fee</label><Switch checked={s.logisticsInFee} onCheckedChange={v => s.updateField('logisticsInFee', v)} className="scale-75 origin-right" /></div></div>
+                       <div className="flex items-center justify-between"><label className="block text-sm font-bold">Travel & Logistics Costs</label><div className="flex items-center gap-2"><label className="text-xs font-bold text-muted-foreground cursor-pointer" onClick={() => s.updateField('logisticsInFee', !s.logisticsInFee)}>Add Travel Fee</label><Switch checked={s.logisticsInFee} onCheckedChange={(v: boolean) => s.updateField('logisticsInFee', v)} className="scale-75 origin-right" /></div></div>
                        <div className="grid grid-cols-3 gap-2">
-                         <NumInput value={s.mobTravel} onChange={v => s.updateField('mobTravel', v)} placeholder="Travel" prefix={curSym(s.cCurrency)} />
-                         <NumInput value={s.mobVisas} onChange={v => s.updateField('mobVisas', v)} placeholder="Visas" prefix={curSym(s.cCurrency)} />
-                         <NumInput value={s.mobAgent} onChange={v => s.updateField('mobAgent', v)} placeholder="Agent" prefix={curSym(s.cCurrency)} />
+                         <NumInput value={s.mobTravel} onChange={(v: string) => s.updateField('mobTravel', v)} placeholder="Travel" prefix={curSym(s.cCurrency)} />
+                         <NumInput value={s.mobVisas} onChange={(v: string) => s.updateField('mobVisas', v)} placeholder="Visas" prefix={curSym(s.cCurrency)} />
+                         <NumInput value={s.mobAgent} onChange={(v: string) => s.updateField('mobAgent', v)} placeholder="Agent" prefix={curSym(s.cCurrency)} />
                        </div>
                        <AnimatedSection show={s.logisticsInFee} className="space-y-2 pt-3">
                          <div className="flex items-center justify-between">
                            <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Travel Fee</label>
-                           <div className="w-28"><SegmentedControl value={s.travelFeeType} onChange={v => s.updateField('travelFeeType', v)} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Travel Fee Type" /></div>
+                           <div className="w-28"><SegmentedControl value={s.travelFeeType} onChange={(v: string) => s.updateField('travelFeeType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Travel Fee Type" /></div>
                          </div>
-                         <NumInput value={s.travelFee} onChange={v => s.updateField('travelFee', v)} prefix={s.travelFeeType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.travelFeeType === 'percentage' ? '%' : undefined} />
+                         <NumInput value={s.travelFee} onChange={(v: string) => s.updateField('travelFee', v)} prefix={s.travelFeeType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.travelFeeType === 'percentage' ? '%' : undefined} />
                        </AnimatedSection>
                      </div>
                    </AnimatedSection>
@@ -1040,8 +1051,8 @@ export default function CalculatorPage() {
 
                 <div className="p-8 md:p-10 flex-grow relative z-0">
                   <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4 print:mb-6">
-                    <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={e=>s.updateField('clientName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
-                    <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={e=>s.updateField('candidateName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
+                    <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={(e) => s.updateField('clientName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
+                    <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={(e) => s.updateField('candidateName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
                   </div>
 
                   <div className="flex items-center justify-between gap-4 mb-8">
@@ -1118,6 +1129,7 @@ export default function CalculatorPage() {
                         </div>
                       </div>
                       <div className="space-y-4">
+
                         <div className="bg-primary-foreground/5 p-4 rounded-xl space-y-2">
                           <div className="flex items-center justify-between font-bold">
                             <span>Days Onboard</span>
@@ -1180,7 +1192,7 @@ export default function CalculatorPage() {
                  <CollapsibleCard title="Perm Settings" icon={Briefcase} defaultOpen>
                     <div className="space-y-4 mb-4">
                       <label className="block text-sm font-bold">Salary Currency</label>
-                      <SegmentedControl value={s.pCurrency} onChange={v => s.updateField('pCurrency', v)} options={CURRENCIES.map(c => ({label: c, value: c}))} ariaLabel="Perm Currency" />
+                      <SegmentedControl value={s.pCurrency} onChange={(v: string) => s.updateField('pCurrency', v as CurrencyCode)} options={CURRENCIES.map(c => ({label: c, value: c}))} ariaLabel="Perm Currency" />
                     </div>
 
                     <AnimatedSection show={s.pCurrency !== 'GBP'}>
@@ -1188,7 +1200,7 @@ export default function CalculatorPage() {
                         <div className="flex items-center gap-2 text-sm font-bold"><Globe className="h-4 w-4" />Exchange Rate</div>
                         <div className="space-y-1">
                           <label htmlFor="p-fx-date" className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Placement / Start Date</label>
-                          <input id="p-fx-date" type="date" value={s.pFxDate} onChange={e => s.updateField('pFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
+                          <input id="p-fx-date" type="date" value={s.pFxDate} onChange={(e) => s.updateField('pFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-input/40 border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium" />
                         </div>
                         <div className="flex items-center justify-between rounded-lg bg-card/60 px-3 py-2.5">
                           <div className="text-sm font-medium">
@@ -1201,11 +1213,11 @@ export default function CalculatorPage() {
 
                     <div className="space-y-2">
                       <label className="block text-sm font-bold">Candidate Annual Salary ({s.pCurrency})</label>
-                      <NumInput value={s.salary} onChange={v => s.updateField('salary', v)} prefix={curSym(s.pCurrency)} />
+                      <NumInput value={s.salary} onChange={(v: string) => s.updateField('salary', v)} prefix={curSym(s.pCurrency)} />
                     </div>
                     <div className="space-y-2 mt-4">
                       <label className="block text-sm font-bold">Placement Fee (%)</label>
-                      <NumInput value={s.placementFee} onChange={v => s.updateField('placementFee', v)} suffix="%" />
+                      <NumInput value={s.placementFee} onChange={(v: string) => s.updateField('placementFee', v)} suffix="%" />
                     </div>
 
                     <AnimatedSection show={s.pCurrency !== 'GBP'}>
@@ -1214,11 +1226,11 @@ export default function CalculatorPage() {
                            <label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('invoiceInOrigin', !s.invoiceInOrigin)}>Invoice in Origin Currency</label>
                            <p className="text-xs text-muted-foreground font-medium">Calculate placement fee in {s.pCurrency} instead of GBP</p>
                          </div>
-                         <Switch checked={s.invoiceInOrigin} onCheckedChange={v => s.updateField('invoiceInOrigin', v)} />
+                         <Switch checked={s.invoiceInOrigin} onCheckedChange={(v: boolean) => s.updateField('invoiceInOrigin', v)} />
                        </div>
                     </AnimatedSection>
 
-                    <div className="flex justify-between border-t border-border/60 mt-4 pt-4"><label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includePermNI', !s.includePermNI)}>Include Employer's NI</label><Switch checked={s.includePermNI} onCheckedChange={v => s.updateField('includePermNI', v)} /></div>
+                    <div className="flex justify-between border-t border-border/60 mt-4 pt-4"><label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('includePermNI', !s.includePermNI)}>Include Employer's NI</label><Switch checked={s.includePermNI} onCheckedChange={(v: boolean) => s.updateField('includePermNI', v)} /></div>
                  </CollapsibleCard>
                  <AssumptionsAccordion fiscalRates={activeFiscalRates} />
                </div>
@@ -1238,8 +1250,8 @@ export default function CalculatorPage() {
 
                   <div className="p-8 md:p-10 flex-grow relative z-0">
                     <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4 print:mb-6">
-                      <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={e=>s.updateField('clientName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
-                      <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={e=>s.updateField('candidateName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
+                      <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={(e) => s.updateField('clientName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
+                      <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={(e) => s.updateField('candidateName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
                     </div>
 
                     <div className="flex items-center justify-between gap-4 mb-8">
@@ -1294,52 +1306,52 @@ export default function CalculatorPage() {
 
                   <div className="space-y-2">
                     <label className="block text-sm font-bold">Payroll Type</label>
-                    <SegmentedControl value={s.pdPayrollType} onChange={v => s.updateField('pdPayrollType', v)} options={[{label: 'Monthly', value: 'monthly'}, {label: 'Fortnightly', value: 'fortnightly'}]} ariaLabel="Payroll Type" />
+                    <SegmentedControl value={s.pdPayrollType} onChange={(v: string) => s.updateField('pdPayrollType', v as 'monthly' | 'fortnightly')} options={[{label: 'Monthly', value: 'monthly'}, {label: 'Fortnightly', value: 'fortnightly'}]} ariaLabel="Payroll Type" />
                   </div>
 
                   <div className="space-y-3">
                     <label htmlFor="pd-start" className="block text-sm font-bold">Start Date</label>
-                    <input id="pd-start" type="date" value={s.pdStartDate} onChange={e => s.updateField('pdStartDate', e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
-                    <SegmentedControl value={s.pdStartMode} onChange={v => s.updateField('pdStartMode', v)} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full', value: 'full'}, {label: 'Custom', value: 'custom'}]} ariaLabel="Start Mode" />
+                    <input id="pd-start" type="date" value={s.pdStartDate} onChange={(e) => s.updateField('pdStartDate', e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
+                    <SegmentedControl value={s.pdStartMode} onChange={(v: string) => s.updateField('pdStartMode', v as 'half' | 'full' | 'custom')} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full', value: 'full'}, {label: 'Custom', value: 'custom'}]} ariaLabel="Start Mode" />
                     <AnimatedSection show={s.pdStartMode === 'custom'} className="pt-2">
-                       <NumInput value={s.pdStartCustomVal} onChange={v => s.updateField('pdStartCustomVal', v)} placeholder="0.5" suffix="days" />
+                       <NumInput value={s.pdStartCustomVal} onChange={(v: string) => s.updateField('pdStartCustomVal', v)} placeholder="0.5" suffix="days" />
                     </AnimatedSection>
                   </div>
 
                   <div className="space-y-3 pt-4 border-t border-border/60">
                     <label htmlFor="pd-finish" className="block text-sm font-bold">Finish Date</label>
-                    <input id="pd-finish" type="date" value={s.pdFinishDate} onChange={e => s.updateField('pdFinishDate', e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
-                    <SegmentedControl value={s.pdFinishMode} onChange={v => s.updateField('pdFinishMode', v)} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full', value: 'full'}, {label: 'Custom', value: 'custom'}]} ariaLabel="Finish Mode" />
+                    <input id="pd-finish" type="date" value={s.pdFinishDate} onChange={(e) => s.updateField('pdFinishDate', e.target.value)} className="w-full px-4 py-3 bg-input/40 border border-input rounded-xl font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all duration-200" />
+                    <SegmentedControl value={s.pdFinishMode} onChange={(v: string) => s.updateField('pdFinishMode', v as 'half' | 'full' | 'custom')} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full', value: 'full'}, {label: 'Custom', value: 'custom'}]} ariaLabel="Finish Mode" />
                     <AnimatedSection show={s.pdFinishMode === 'custom'} className="pt-2">
-                       <NumInput value={s.pdFinishCustomVal} onChange={v => s.updateField('pdFinishCustomVal', v)} placeholder="0.5" suffix="days" />
+                       <NumInput value={s.pdFinishCustomVal} onChange={(v: string) => s.updateField('pdFinishCustomVal', v)} placeholder="0.5" suffix="days" />
                     </AnimatedSection>
                   </div>
 
                   <div className="space-y-3 pt-4 border-t border-border/60 group">
                     <div className="flex items-center justify-between">
                       <label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('pdIncludeSubsistence', !s.pdIncludeSubsistence)}>Include Subsistence</label>
-                      <Switch checked={s.pdIncludeSubsistence} onCheckedChange={v => s.updateField('pdIncludeSubsistence', v)} />
+                      <Switch checked={s.pdIncludeSubsistence} onCheckedChange={(v: boolean) => s.updateField('pdIncludeSubsistence', v)} />
                     </div>
                     <AnimatedSection show={s.pdIncludeSubsistence} className="pt-2">
                       <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide mb-2">Subsistence Rate (£ per day)</label>
-                      <NumInput value={s.pdSubsistenceRate} onChange={v => s.updateField('pdSubsistenceRate', v)} prefix="£" />
+                      <NumInput value={s.pdSubsistenceRate} onChange={(v: string) => s.updateField('pdSubsistenceRate', v)} prefix="£" />
                     </AnimatedSection>
                   </div>
 
                   <div className="space-y-3 pt-4 border-t border-border/60 group">
                     <div className="flex items-center justify-between">
                       <label className="text-sm font-bold cursor-pointer" onClick={() => s.updateField('pdIncludePay', !s.pdIncludePay)}>Calculate Period Pay & Advances</label>
-                      <Switch checked={s.pdIncludePay} onCheckedChange={v => s.updateField('pdIncludePay', v)} />
+                      <Switch checked={s.pdIncludePay} onCheckedChange={(v: boolean) => s.updateField('pdIncludePay', v)} />
                     </div>
                     <AnimatedSection show={s.pdIncludePay} className="pt-2">
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
                           <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Day Rate (£)</label>
-                          <NumInput value={s.pdDayRate} onChange={v => s.updateField('pdDayRate', v)} prefix="£" />
+                          <NumInput value={s.pdDayRate} onChange={(v: string) => s.updateField('pdDayRate', v)} prefix="£" />
                         </div>
                         <div className="space-y-2">
                           <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wide">Advance Deduction (£)</label>
-                          <NumInput value={s.pdAdvance} onChange={v => s.updateField('pdAdvance', v)} prefix="£" />
+                          <NumInput value={s.pdAdvance} onChange={(v: string) => s.updateField('pdAdvance', v)} prefix="£" />
                         </div>
                       </div>
                     </AnimatedSection>
@@ -1350,12 +1362,13 @@ export default function CalculatorPage() {
 
               <div className="lg:col-span-7 bg-primary text-primary-foreground rounded-2xl shadow-xl overflow-hidden flex flex-col relative print:bg-white print:text-black">
                 <div className="p-8 md:p-10 flex-grow relative z-0">
+
                   <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4 print:mb-6">
-                    <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={e=>s.updateField('clientName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
-                    <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={e=>s.updateField('candidateName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
+                    <input type="text" placeholder="Client Name (Optional)" value={s.clientName} onChange={(e) => s.updateField('clientName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:font-bold print:text-2xl" />
+                    <input type="text" placeholder="Candidate Name (Optional)" value={s.candidateName} onChange={(e) => s.updateField('candidateName', e.target.value)} className="bg-transparent border-b border-primary-foreground/20 text-white placeholder:text-primary-foreground/40 px-1 py-1 focus:outline-none focus:border-primary-foreground/50 transition-colors print:text-black print:border-none print:p-0 print:text-gray-600 sm:text-right print:text-lg print:sm:mt-2" />
                   </div>
 
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+                  <div className="flex items-center justify-between gap-4 mb-8">
                     <div className="flex items-center gap-3">
                       <h2 className="text-xl font-bold">Payroll Summary</h2>
                       <span className="text-xs uppercase tracking-widest font-bold px-3 py-1.5 bg-primary-foreground/10 rounded-full print:bg-gray-200">
@@ -1545,7 +1558,7 @@ export default function CalculatorPage() {
                       <label className="block text-xs font-bold text-foreground">Adhere to Alcohol & Drugs Policy?</label>
                       <SegmentedControl 
                         value={s.refDrugsPolicy} 
-                        onChange={(v) => s.updateField('refDrugsPolicy', v)} 
+                        onChange={(v: string) => s.updateField('refDrugsPolicy', v)} 
                         options={[{label: 'N/A', value: ''}, {label: 'Yes', value: 'Yes'}, {label: 'No', value: 'No'}]} 
                         ariaLabel="A&D Policy" 
                       />
@@ -1554,7 +1567,7 @@ export default function CalculatorPage() {
                       <label className="block text-xs font-bold text-foreground">Recommended for Re-Hire?</label>
                       <SegmentedControl 
                         value={s.refReHire} 
-                        onChange={(v) => s.updateField('refReHire', v)} 
+                        onChange={(v: string) => s.updateField('refReHire', v)} 
                         options={[{label: 'N/A', value: ''}, {label: 'Yes', value: 'Yes'}, {label: 'No', value: 'No'}]} 
                         ariaLabel="Re-Hire" 
                       />
@@ -1597,14 +1610,17 @@ export default function CalculatorPage() {
 
                      <h3 className="text-lg font-bold border-b border-primary-foreground/20 pb-2 mb-4 print:border-gray-300">Performance Assessment</h3>
                      <div className="space-y-2 mb-10">
-                        {RATING_FIELDS.map(f => (
-                           <div key={f.key} className="flex justify-between items-center text-sm border-b border-primary-foreground/5 pb-2 print:border-gray-200">
-                              <span className="font-medium text-primary-foreground/80 print:text-gray-700">{f.label}</span>
-                              <span className={cn("font-bold text-right", !s[f.key as keyof AppState] && "text-primary-foreground/30 print:text-gray-400")}>
-                                {s[f.key as keyof AppState] || '-'}
-                              </span>
-                           </div>
-                        ))}
+                        {RATING_FIELDS.map(f => {
+                           const fieldValue = s[f.key as keyof AppState] as string;
+                           return (
+                             <div key={f.key} className="flex justify-between items-center text-sm border-b border-primary-foreground/5 pb-2 print:border-gray-200">
+                                <span className="font-medium text-primary-foreground/80 print:text-gray-700">{f.label}</span>
+                                <span className={cn("font-bold text-right", !fieldValue && "text-primary-foreground/30 print:text-gray-400")}>
+                                  {fieldValue || '-'}
+                                </span>
+                             </div>
+                           );
+                        })}
                      </div>
 
                      <h3 className="text-lg font-bold border-b border-primary-foreground/20 pb-2 mb-4 print:border-gray-300">Compliance & Re-Hire</h3>
