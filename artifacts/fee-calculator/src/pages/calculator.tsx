@@ -366,6 +366,7 @@ interface AppState {
   seafarerExempt: boolean;
   includeSubsistence: boolean;
   subsistenceTravel: string;
+  subsistenceTravelDays: string;
   subsistenceOnboard: string;
   subsistenceInFee: boolean;
   includeTrip: boolean;
@@ -425,7 +426,7 @@ const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPre
   theme: 'light', taxYear: '2025/2026', clientName: '', candidateName: '', cCurrency: 'GBP', cFxDate: new Date().toISOString().slice(0, 10),
   consolidatedRate: '', feeType: 'percentage', margin: '15', crewSize: '1', includePension: false, includeAppyLevy: false,
   includeContingency: false, contingencyType: 'percentage', contingencyValue: '', includeNI: true, niMode: 'base',
-  seafarerExempt: false, includeSubsistence: false, subsistenceTravel: '50', subsistenceOnboard: '0', subsistenceInFee: true,
+  seafarerExempt: false, includeSubsistence: false, subsistenceTravel: '50', subsistenceTravelDays: '1', subsistenceOnboard: '0', subsistenceInFee: true,
   includeTrip: false, workingDays: '28', travelDays: '2', travelDayFull: false, travelFeeType: 'percentage', travelFee: '15',
   mobTravel: '', mobVisas: '', mobAgent: '', logisticsInFee: false, salary: '', placementFee: '', includePermNI: false,
   pCurrency: 'GBP', invoiceInOrigin: false, pFxDate: new Date().toISOString().slice(0, 10), pdPayrollType: 'monthly',
@@ -733,6 +734,7 @@ export default function CalculatorPage() {
   const dbMargin = useDebounce(s.margin, 300);
   const dbContingencyValue = useDebounce(s.contingencyValue, 300);
   const dbSubTravel = useDebounce(s.subsistenceTravel, 300);
+  const dbSubTravelDays = useDebounce(s.subsistenceTravelDays, 300);
   const dbSubOnboard = useDebounce(s.subsistenceOnboard, 300);
   const dbTravelFee = useDebounce(s.travelFee, 300);
   const dbWorkingDays = useDebounce(s.workingDays, 300);
@@ -1221,8 +1223,11 @@ export default function CalculatorPage() {
                   </div>
                   <AnimatedSection show={s.includeSubsistence} className="pt-3 space-y-5 border-t border-slate-100 dark:border-slate-800 mt-3">
                     <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel</label><NumInput value={s.subsistenceTravel} onChange={(v: string) => s.updateField('subsistenceTravel', v)} prefix={curSym(s.cCurrency)} /></div>
-                      <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Onboard</label><NumInput value={s.subsistenceOnboard} onChange={(v: string) => s.updateField('subsistenceOnboard', v)} prefix={curSym(s.cCurrency)} /></div>
+                      <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel (per day)</label><NumInput value={s.subsistenceTravel} onChange={(v: string) => s.updateField('subsistenceTravel', v)} prefix={curSym(s.cCurrency)} /></div>
+                      <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel Days</label><NumInput value={s.subsistenceTravelDays} onChange={(v: string) => s.updateField('subsistenceTravelDays', v)} placeholder="1" /></div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Onboard (per day)</label><NumInput value={s.subsistenceOnboard} onChange={(v: string) => s.updateField('subsistenceOnboard', v)} prefix={curSym(s.cCurrency)} /></div>
                     </div>
                     <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.includeSubsistence && s.updateField('subsistenceInFee', !s.subsistenceInFee)}>Apply margin to subsistence</label><Switch checked={s.subsistenceInFee} onCheckedChange={(v: boolean) => s.updateField('subsistenceInFee', v)} disabled={!s.includeSubsistence} /></div>
                   </AnimatedSection>
@@ -1299,7 +1304,7 @@ export default function CalculatorPage() {
                     {s.includeNI && (
                       <LineItem label={s.seafarerExempt ? "Employers NIC (Exempt)" : `Employers NIC (${activeFiscalRates.employerNI * 100}%)`} value={contract.cEmployerNI * contract.crewSize} currency={s.cCurrency} />
                     )}
-                    {s.includeSubsistence && contract.cSubTravelAmt > 0 && <LineItem label="Travel Subsistence" value={contract.cSubTravelAmt * contract.crewSize} currency={s.cCurrency} />}
+                    {s.includeSubsistence && contract.cSubTravelAmt > 0 && (() => { const tDays = Math.max(1, parseFloat(dbSubTravelDays) || 1); return <LineItem label={`Travel Subsistence (×${tDays} day${tDays !== 1 ? 's' : ''})`} value={contract.cSubTravelAmt * contract.crewSize * tDays} currency={s.cCurrency} />; })()}
                     {s.includeSubsistence && contract.cSubOnboardAmt > 0 && <LineItem label="Onboard Victualling/Sub" value={contract.cSubOnboardAmt * contract.crewSize} currency={s.cCurrency} />}
                     <LineItem label={`Management Fee (${contract.feeType === 'percentage' && contract.cMarginVal > 0 ? `${contract.cMarginVal}%` : 'Fixed'})`} value={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
 
