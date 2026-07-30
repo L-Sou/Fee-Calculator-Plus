@@ -865,9 +865,9 @@ export default function CalculatorPage() {
     text += `-----------------------------------\n`;
 
     if (s.displayCurrency === 'gbp' && s.cCurrency !== 'GBP' && cFx.rate) {
-      text += `Total Charge Rate (GBP Equivalent): ${formatCurrencyIn(contract.cTotalCharge * s.crewSize * cFx.rate, 'GBP')}`;
+      text += `Total Charge Rate (GBP Equivalent): ${formatCurrencyIn(contract.cTotalCharge * contract.crewSize * cFx.rate!, 'GBP')}`;
     } else {
-      text += `Total Charge Rate (Onboard): ${formatCurrencyIn(contract.cTotalCharge * s.crewSize, s.cCurrency)}`;
+      text += `Total Charge Rate (Onboard): ${formatCurrencyIn(contract.cTotalCharge * contract.crewSize, s.cCurrency)}`;
     }
 
     copyText(text).then(ok => showToast(ok ? 'Charge breakdown copied' : 'Clipboard access denied. Please select and copy manually.'));
@@ -875,8 +875,8 @@ export default function CalculatorPage() {
 
   const copyTripSummary = () => {
     let text = `Hitch & Crew Change Invoice Summary\n-----------------------------------\n`;
-    text += `Hitch Days (${contract.nWorkingDays}): ${formatCurrencyIn(contract.tripWorkingTotal * s.crewSize, s.cCurrency)}\n`;
-    text += `Travel Days (${contract.nTravelDays}): ${formatCurrencyIn(contract.tripTravelTotal * s.crewSize, s.cCurrency)}\n`;
+    text += `Hitch Days (${contract.nWorkingDays}): ${formatCurrencyIn(contract.tripWorkingTotal * contract.crewSize, s.cCurrency)}\n`;
+    text += `Travel Days (${contract.nTravelDays}): ${formatCurrencyIn(contract.tripTravelTotal * contract.crewSize, s.cCurrency)}\n`;
     if (contract.crewLogisticsTotal > 0) text += `Travel & Logistics Costs: ${formatCurrencyIn(contract.crewLogisticsTotal, s.cCurrency)}\n`;
     text += `-----------------------------------\n`;
 
