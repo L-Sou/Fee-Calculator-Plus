@@ -1224,7 +1224,7 @@ export default function CalculatorPage() {
                   <AnimatedSection show={s.includeSubsistence} className="pt-3 space-y-5 border-t border-slate-100 dark:border-slate-800 mt-3">
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel (per day)</label><NumInput value={s.subsistenceTravel} onChange={(v: string) => s.updateField('subsistenceTravel', v)} prefix={curSym(s.cCurrency)} /></div>
-                      <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel Days</label><NumInput value={s.subsistenceTravelDays} onChange={(v: string) => s.updateField('subsistenceTravelDays', v)} placeholder="1" /></div>
+                      {!s.includeTrip && <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel Days</label><NumInput value={s.subsistenceTravelDays} onChange={(v: string) => s.updateField('subsistenceTravelDays', v)} placeholder="1" /></div>}
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Onboard (per day)</label><NumInput value={s.subsistenceOnboard} onChange={(v: string) => s.updateField('subsistenceOnboard', v)} prefix={curSym(s.cCurrency)} /></div>
@@ -1304,7 +1304,7 @@ export default function CalculatorPage() {
                     {s.includeNI && (
                       <LineItem label={s.seafarerExempt ? "Employers NIC (Exempt)" : `Employers NIC (${activeFiscalRates.employerNI * 100}%)`} value={contract.cEmployerNI * contract.crewSize} currency={s.cCurrency} />
                     )}
-                    {s.includeSubsistence && !s.includeTrip && contract.cSubTravelAmt > 0 && (() => { const tDays = Math.max(1, parseFloat(dbSubTravelDays) || 1); return <LineItem label={`Travel Subsistence (×${tDays} day${tDays !== 1 ? 's' : ''})`} value={contract.cSubTravelAmt * contract.crewSize * tDays} currency={s.cCurrency} />; })()}
+                    {s.includeSubsistence && contract.cSubTravelAmt > 0 && (() => { const tDays = s.includeTrip ? Math.max(1, parseFloat(dbTravelDays) || 1) : Math.max(1, parseFloat(dbSubTravelDays) || 1); return <LineItem label={`Travel Subsistence (×${tDays} day${tDays !== 1 ? 's' : ''})`} value={contract.cSubTravelAmt * contract.crewSize * tDays} currency={s.cCurrency} />; })()}
                     {s.includeSubsistence && contract.cSubOnboardAmt > 0 && <LineItem label="Onboard Victualling/Sub" value={contract.cSubOnboardAmt * contract.crewSize} currency={s.cCurrency} />}
                     <LineItem label={`Management Fee (${contract.feeType === 'percentage' && contract.cMarginVal > 0 ? `${contract.cMarginVal}%` : 'Fixed'})`} value={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
 
