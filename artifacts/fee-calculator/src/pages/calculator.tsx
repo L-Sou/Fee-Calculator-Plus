@@ -285,13 +285,12 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
         idx++;
       }
     } else {
-      // Monthly: cut-off is Sunday before the bank-holiday-adjusted 28th payday
+      // Monthly: cut-off is the 20th; payday is the bank-holiday-adjusted 28th
       let year = start.getFullYear(), month = start.getMonth();
       for (let i = 0; i < 25; i++) {
-        const payday = monthlyPayday(year, month);
-        const cutoff = sundayBefore(payday);
+        const cutoff = new Date(year, month, 20, 12, 0, 0, 0);
         if (cutoff.getTime() >= start.getTime()) {
-          cutoffs.push({ payday, cutoff });
+          cutoffs.push({ payday: monthlyPayday(year, month), cutoff });
           if (cutoff.getTime() >= finish.getTime()) break;
         }
         if (++month > 11) { month = 0; year++; }
@@ -307,8 +306,7 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
           const last = cutoffs[cutoffs.length - 1];
           let m = last.payday.getMonth() + 1, y = last.payday.getFullYear();
           if (m > 11) { m = 0; y++; }
-          const nextPayday = monthlyPayday(y, m);
-          cutoffs.push({ payday: nextPayday, cutoff: sundayBefore(nextPayday) });
+          cutoffs.push({ payday: monthlyPayday(y, m), cutoff: new Date(y, m, 20, 12, 0, 0, 0) });
         } else break;
       }
 
