@@ -384,6 +384,7 @@ interface AppState {
   invoiceInOrigin: boolean;
   pFxDate: string;
   pdPayrollType: 'monthly' | 'fortnightly';
+  pdMergeLastPeriod: boolean;
   pdStartDate: string;
   pdStartMode: 'half' | 'full' | 'custom';
   pdStartCustomVal: string;
@@ -427,7 +428,7 @@ const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPre
   seafarerExempt: false, includeSubsistence: false, subsistenceTravel: '50', subsistenceTravelDays: '1', subsistenceOnboard: '0', subsistenceInFee: true,
   includeTrip: false, workingDays: '28', travelDays: '2', travelDayFull: false, travelFeeType: 'percentage', travelFee: '15',
   mobTravel: '', mobVisas: '', mobAgent: '', logisticsInFee: false, salary: '', placementFee: '', includePermNI: false,
-  pCurrency: 'GBP', invoiceInOrigin: false, pFxDate: new Date().toISOString().slice(0, 10), pdPayrollType: 'monthly',
+  pCurrency: 'GBP', invoiceInOrigin: false, pFxDate: new Date().toISOString().slice(0, 10), pdPayrollType: 'monthly', pdMergeLastPeriod: false,
   pdStartDate: '', pdStartMode: 'full', pdStartCustomVal: '0.5', pdFinishDate: '', pdFinishMode: 'full', pdFinishCustomVal: '0.5',
   pdIncludeSubsistence: false, pdSubsistenceRate: '', pdIncludePay: false, pdDayRate: '', pdAdvance: '',
   refSeafarerName: '', refDiscipline: '', refCompany: '', refVessel: '', refDates: '', refCompetence: '',
@@ -796,9 +797,19 @@ export default function CalculatorPage() {
   const rawPaydays = useMemo(() => calculateRawPaydays(s, bankHolidays), [s, bankHolidays]);
 
   const paydays = useMemo(() => {
-    if (rawPaydays.error || !rawPaydays.splits.length) return { splits: [], error: rawPaydays.error, totalDays: null, totalSubDays: null, totalSub: null };
+    if (rawPaydays.error || !rawPaydays.splits.length) return { splits: [] as any[], error: rawPaydays.error, totalDays: null, totalSubDays: null, totalSub: null };
     const subAmt = s.pdIncludeSubsistence ? parseFloat(s.pdSubsistenceRate) || 0 : 0;
-    const finalSplits = rawPaydays.splits.map((split, idx) => {
+    let workingSplits = rawPaydays.splits;
+
+    // If merge is on and there are at least 2 periods, fold the last period's days into the previous one
+    if (s.pdMergeLastPeriod && workingSplits.length >= 2) {
+      const last = workingSplits[workingSplits.length - 1];
+      const prev = workingSplits[workingSplits.length - 2];
+      const merged = { ...prev, periodEnd: last.periodEnd, days: prev.days + last.days };
+      workingSplits = [...workingSplits.slice(0, -2), merged];
+    }
+
+    const finalSplits = workingSplits.map((split, idx) => {
       const override = subDaysOverrides[idx];
       return { ...split, subDays: (override !== undefined && override !== '') ? (parseFloat(override) || 0) : split.days };
     });
@@ -808,7 +819,7 @@ export default function CalculatorPage() {
       totalSubDays: finalSplits.reduce((sum, sp) => sum + sp.subDays, 0),
       totalSub: s.pdIncludeSubsistence ? finalSplits.reduce((sum, sp) => sum + sp.subDays * subAmt, 0) : null,
     };
-  }, [rawPaydays, subDaysOverrides, s.pdIncludeSubsistence, s.pdSubsistenceRate]);
+  }, [rawPaydays, subDaysOverrides, s.pdIncludeSubsistence, s.pdSubsistenceRate, s.pdMergeLastPeriod]);
 
   const pdTotalGross = (paydays.totalDays || 0) * (parseFloat(s.pdDayRate) || 0);
   const pdTotalNet = pdTotalGross + (paydays.totalSub || 0) - (parseFloat(s.pdAdvance) || 0);
@@ -1593,6 +1604,16 @@ export default function CalculatorPage() {
                       <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Subsistence Rate (£ per day)</label>
                       <NumInput value={s.pdSubsistenceRate} onChange={(v: string) => s.updateField('pdSubsistenceRate', v)} prefix="£" />
                     </AnimatedSection>
+                  </div>
+
+                  <div className="space-y-3 pt-4 border-t border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('pdMergeLastPeriod', !s.pdMergeLastPeriod)}>Merge Last Period Into Previous</label>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">Pay days past the cut-off in the same run</p>
+                      </div>
+                      <Switch checked={s.pdMergeLastPeriod} onCheckedChange={(v: boolean) => s.updateField('pdMergeLastPeriod', v)} />
+                    </div>
                   </div>
 
                   <div className="space-y-3 pt-4 border-t border-slate-100 dark:border-slate-800 group">
