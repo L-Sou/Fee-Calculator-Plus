@@ -74,14 +74,18 @@ export interface PaydayParams {
 }
 
 export interface TripBreakdownRow {
+  payRateFormatted: string;
   client: string;
   rank: string;
   vessel: string;
-  location: string;
+  flagState: string;
   vesselType: string;
   startDate: string;
   endDate: string;
   description: string;
+  chargeRateFormatted: string;
+  periodMonth: string;
+  paydayDaysDesc: string;
   rawDays: number;
 }
 
@@ -145,7 +149,15 @@ const formatShortUK = (d: Date): string => {
   return `${day}/${month}/${year}`;
 };
 
+const formatShortMonthYear = (d: Date): string => {
+  const shortMonths = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const month = shortMonths[d.getMonth()];
+  const year = String(d.getFullYear()).slice(-2);
+  return `${month}-${year}`;
+};
+
 const parseDate = (s: string): Date => {
+  if (!s || !s.includes('-')) return new Date();
   const [y, m, d] = s.split('-').map(Number);
   return new Date(y, m - 1, d, 12, 0, 0, 0); 
 };
@@ -167,7 +179,7 @@ async function copyText(text: string): Promise<boolean> {
   return false;
 }
 
-// ─── 2. Calculation Engines ───────────────────────────────────────────────────
+// ─── 2. Pure Calculation Engines ──────────────────────────────────────────────
 
 function calculateContract(params: ContractParams, fiscalRates: FiscalRates) {
   const crewSize = Math.max(1, parseInt(params.crewSize) || 1);
@@ -268,7 +280,7 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
   if (!params.pdStartDate || !params.pdFinishDate) return { splits: [], error: null };
   const start = parseDate(params.pdStartDate);
   const finish = parseDate(params.pdFinishDate);
-  if (finish < start) return { splits: [], error: 'Finish date must be on or after start date.' };
+  if (finish.getTime() < start.getTime()) return { splits: [], error: 'Finish date must be on or after start date.' };
 
   const startVal = params.pdStartMode === 'full' ? 1 : params.pdStartMode === 'half' ? 0.5 : Math.max(0, parseFloat(params.pdStartCustomVal) || 0);
   const finishVal = params.pdFinishMode === 'full' ? 1 : params.pdFinishMode === 'half' ? 0.5 : Math.max(0, parseFloat(params.pdFinishCustomVal) || 0);
@@ -365,22 +377,34 @@ function generateMonthlyTripBreakdown(
   client: string,
   rank: string,
   vessel: string,
-  location: string,
+  flagState: string,
   vesselType: string,
   startMode: DayRateMode,
   startCustomVal: string,
   endMode: DayRateMode,
-  endCustomVal: string
+  endCustomVal: string,
+  dayRateStr: string,
+  marginStr: string,
+  feeType: 'percentage' | 'fixed',
+  currency: CurrencyCode,
+  paydaySplits: any[]
 ): { rows: TripBreakdownRow[]; error: string | null } {
   if (!startDateStr || !endDateStr) return { rows: [], error: null };
   const overallStart = parseDate(startDateStr);
   const overallEnd = parseDate(endDateStr);
 
-  if (overallEnd < overallStart) {
+  if (overallEnd.getTime() < overallStart.getTime()) {
     return { rows: [], error: 'End date cannot be prior to start date.' };
   }
 
   const rows: TripBreakdownRow[] = [];
+
+  const payRateNum = Math.max(0, parseFloat(dayRateStr) || 0);
+  const marginNum = Math.max(0, parseFloat(marginStr) || 0);
+  const chargeRateNum = feeType === 'percentage' ? payRateNum * (1 + marginNum / 100) : payRateNum + marginNum;
+
+  const payRateFormatted = payRateNum > 0 ? formatCurrencyIn(payRateNum, currency) : '';
+  const chargeRateFormatted = chargeRateNum > 0 ? formatCurrencyIn(chargeRateNum, currency) : '';
 
   const getDayValue = (mode: DayRateMode, customVal: string): number => {
     if (mode === 'half') return 0.5;
@@ -399,10 +423,14 @@ function generateMonthlyTripBreakdown(
   if (startMode !== 'none') {
     const sVal = getDayValue(startMode, startCustomVal);
     rows.push({
-      client, rank, vessel, location, vesselType,
+      payRateFormatted,
+      client, rank, vessel, flagState, vesselType,
       startDate: formatShortUK(currentStart),
       endDate: formatShortUK(currentStart),
       description: formatDayDesc(sVal, true),
+      chargeRateFormatted,
+      periodMonth: '',
+      paydayDaysDesc: '',
       rawDays: sVal
     });
     currentStart = addDays(currentStart, 1);
@@ -412,27 +440,34 @@ function generateMonthlyTripBreakdown(
   let workingEnd = new Date(overallEnd);
   let travelEndDate: Date | null = null;
   if (endMode !== 'none') {
-    if (workingEnd >= currentStart) {
+    if (workingEnd.getTime() >= currentStart.getTime()) {
       travelEndDate = new Date(workingEnd);
       workingEnd = addDays(workingEnd, -1);
     }
   }
 
   // 3. Monthly Split for Onboard Hitch
-  if (currentStart <= workingEnd) {
+  const workingRows: TripBreakdownRow[] = [];
+  if (currentStart.getTime() <= workingEnd.getTime()) {
     let curr = new Date(currentStart);
-    while (curr <= workingEnd) {
+    let loopGuard = 0;
+    while (curr.getTime() <= workingEnd.getTime() && loopGuard < 36) {
+      loopGuard++;
       const year = curr.getFullYear();
       const month = curr.getMonth();
       const lastDayOfMonth = new Date(year, month + 1, 0, 12, 0, 0, 0);
-      const chunkEnd = workingEnd < lastDayOfMonth ? new Date(workingEnd) : lastDayOfMonth;
+      const chunkEnd = workingEnd.getTime() < lastDayOfMonth.getTime() ? new Date(workingEnd) : lastDayOfMonth;
 
       const diffDays = Math.round((chunkEnd.getTime() - curr.getTime()) / 86400000) + 1;
-      rows.push({
-        client, rank, vessel, location, vesselType,
+      workingRows.push({
+        payRateFormatted,
+        client, rank, vessel, flagState, vesselType,
         startDate: formatShortUK(curr),
         endDate: formatShortUK(chunkEnd),
         description: `${diffDays} Day${diffDays > 1 ? 's' : ''}`,
+        chargeRateFormatted,
+        periodMonth: formatShortMonthYear(curr),
+        paydayDaysDesc: '',
         rawDays: diffDays
       });
 
@@ -440,14 +475,31 @@ function generateMonthlyTripBreakdown(
     }
   }
 
+  // Map Paydays info side-by-side with working rows
+  workingRows.forEach((r, idx) => {
+    if (paydaySplits && paydaySplits[idx]) {
+      const pDays = paydaySplits[idx].days;
+      const formattedPDays = pDays % 1 === 0 ? pDays.toString() : pDays.toFixed(1);
+      r.paydayDaysDesc = `${formattedPDays} Days`;
+      if (!r.periodMonth && paydaySplits[idx].periodStart) {
+        r.periodMonth = formatShortMonthYear(paydaySplits[idx].periodStart);
+      }
+    }
+    rows.push(r);
+  });
+
   // 4. Final Travel Day (if active)
   if (endMode !== 'none' && travelEndDate) {
     const eVal = getDayValue(endMode, endCustomVal);
     rows.push({
-      client, rank, vessel, location, vesselType,
+      payRateFormatted,
+      client, rank, vessel, flagState, vesselType,
       startDate: formatShortUK(travelEndDate),
       endDate: formatShortUK(travelEndDate),
       description: formatDayDesc(eVal, true),
+      chargeRateFormatted,
+      periodMonth: '',
+      paydayDaysDesc: '',
       rawDays: eVal
     });
   }
@@ -533,7 +585,7 @@ interface AppState {
   tbClient: string;
   tbRank: string;
   tbVessel: string;
-  tbLocation: string;
+  tbFlagState: string;
   tbVesselType: string;
   tbStartDate: string;
   tbEndDate: string;
@@ -541,6 +593,9 @@ interface AppState {
   tbStartCustomVal: string;
   tbEndMode: DayRateMode;
   tbEndCustomVal: string;
+  tbDayRate: string;
+  tbMargin: string;
+  tbExcludeHeadersOnCopy: boolean;
 
   savedPresets: Record<string, Partial<AppState>>;
   updateField: <K extends keyof AppState>(field: K, value: AppState[K]) => void;
@@ -566,14 +621,17 @@ const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPre
   tbClient: '',
   tbRank: '',
   tbVessel: '',
-  tbLocation: '',
+  tbFlagState: '',
   tbVesselType: '',
   tbStartDate: '',
   tbEndDate: '',
   tbStartMode: 'full',
   tbStartCustomVal: '0.5',
   tbEndMode: 'full',
-  tbEndCustomVal: '0.5'
+  tbEndCustomVal: '0.5',
+  tbDayRate: '',
+  tbMargin: '15',
+  tbExcludeHeadersOnCopy: false
 };
 
 const useStore = create<AppState>()(
@@ -581,7 +639,41 @@ const useStore = create<AppState>()(
     (set) => ({
       ...defaultState,
       savedPresets: {},
-      updateField: (field, value) => set({ [field]: value }),
+      updateField: (field, value) => {
+        set((state) => {
+          if (state[field] === value) return state;
+          const updates: Partial<AppState> = { [field]: value };
+
+          // Bi-directional Date Sync
+          if (field === 'tbStartDate' && state.pdStartDate !== value) {
+            updates.pdStartDate = value as string;
+          } else if (field === 'pdStartDate' && state.tbStartDate !== value) {
+            updates.tbStartDate = value as string;
+          }
+
+          if (field === 'tbEndDate' && state.pdFinishDate !== value) {
+            updates.pdFinishDate = value as string;
+          } else if (field === 'pdFinishDate' && state.tbEndDate !== value) {
+            updates.tbEndDate = value as string;
+          }
+
+          // Bi-directional Pay Rate & Margin Sync
+          if (field === 'tbDayRate') {
+            if (state.pdDayRate !== value) updates.pdDayRate = value as string;
+            if (state.consolidatedRate !== value) updates.consolidatedRate = value as string;
+          } else if ((field === 'pdDayRate' || field === 'consolidatedRate') && state.tbDayRate !== value) {
+            updates.tbDayRate = value as string;
+          }
+
+          if (field === 'tbMargin' && state.margin !== value) {
+            updates.margin = value as string;
+          } else if (field === 'margin' && state.tbMargin !== value) {
+            updates.tbMargin = value as string;
+          }
+
+          return updates;
+        });
+      },
       resetToDefaults: () => set((state) => ({ ...defaultState, savedPresets: state.savedPresets || {}, theme: state.theme || 'light' })),
       deletePreset: (name) => set((state) => {
         const newPresets = { ...(state.savedPresets || {}) };
@@ -590,7 +682,7 @@ const useStore = create<AppState>()(
       })
     }),
     { 
-      name: 'maritime-hq-v9', 
+      name: 'maritime-hq-v14', 
       merge: (persistedState: any, currentState) => {
         return { ...currentState, ...persistedState, savedPresets: persistedState?.savedPresets || {} };
       }
@@ -833,7 +925,7 @@ export default function CalculatorPage() {
   useEffect(() => {
     if (!s || !s.updateField || !s.taxYear || !FISCAL_PROFILES[s.taxYear]) {
       console.error("Corrupted state detected. Resetting to defaults.");
-      localStorage.removeItem('maritime-hq-v9');
+      localStorage.removeItem('maritime-hq-v14');
       window.location.reload();
     }
   }, [s]);
@@ -842,7 +934,7 @@ export default function CalculatorPage() {
 
   const { showToast, showUndoToast, ToastContainer } = useToast();
   const bankHolidays = useBankHolidays();
-  const [mode, setMode] = useState<'contract' | 'perm' | 'paydays' | 'trip' | 'reference'>('contract');
+  const [mode, setMode] = useState<'contract' | 'perm' | 'trip' | 'paydays' | 'reference'>('contract');
   const [newPresetName, setNewPresetName] = useState('');
   const [selectedPreset, setSelectedPreset] = useState('');
   const [subDaysOverrides, setSubDaysOverrides] = useState<Record<number, string>>({});
@@ -961,14 +1053,19 @@ export default function CalculatorPage() {
       s.tbClient || '-',
       s.tbRank || '-',
       s.tbVessel || '-',
-      s.tbLocation || '-',
+      s.tbFlagState || '-',
       s.tbVesselType || '-',
       s.tbStartMode,
       s.tbStartCustomVal,
       s.tbEndMode,
-      s.tbEndCustomVal
+      s.tbEndCustomVal,
+      s.tbDayRate,
+      s.tbMargin,
+      s.feeType,
+      s.cCurrency,
+      paydays.splits
     );
-  }, [s.tbStartDate, s.tbEndDate, s.tbClient, s.tbRank, s.tbVessel, s.tbLocation, s.tbVesselType, s.tbStartMode, s.tbStartCustomVal, s.tbEndMode, s.tbEndCustomVal]);
+  }, [s.tbStartDate, s.tbEndDate, s.tbClient, s.tbRank, s.tbVessel, s.tbFlagState, s.tbVesselType, s.tbStartMode, s.tbStartCustomVal, s.tbEndMode, s.tbEndCustomVal, s.tbDayRate, s.tbMargin, s.feeType, s.cCurrency, paydays.splits]);
 
   // ─── Export Functions ───
   const downloadCSV = (filename: string, headers: string, rows: string) => {
@@ -1006,20 +1103,25 @@ export default function CalculatorPage() {
 
   const exportTripBreakdownCSV = () => {
     if (!tripBreakdown.rows.length) return;
-    const headers = "Client,Rank,Vessel,Location,Vessel Type,Start Date,End Date,Days\n";
+    const headers = s.tbExcludeHeadersOnCopy 
+      ? "" 
+      : "Pay Rate,Client,Rank,Vessel,Flag State,Vessel Type,Start Date,End Date,Days,Charge Rate,Period Month,Payday Days\n";
     const rows = tripBreakdown.rows.map(r => 
-      `"${r.client}","${r.rank}","${r.vessel}","${r.location}","${r.vesselType}","${r.startDate}","${r.endDate}","${r.description}"`
+      `"${r.payRateFormatted}","${r.client}","${r.rank}","${r.vessel}","${r.flagState}","${r.vesselType}","${r.startDate}","${r.endDate}","${r.description}","${r.chargeRateFormatted}","${r.periodMonth}","${r.paydayDaysDesc}"`
     ).join("\n");
     downloadCSV(`trip_breakdown_${s.tbStartDate || 'start'}_to_${s.tbEndDate || 'end'}.csv`, headers, rows);
   };
 
   const copyTripBreakdownSummary = () => {
     if (!tripBreakdown.rows.length) return;
-    let tsv = `Client\tRank\tVessel\tLocation\tVessel Type\tStart Date\tEnd Date\tDays\n`;
+    let tsv = s.tbExcludeHeadersOnCopy 
+      ? "" 
+      : "Pay Rate\tClient\tRank\tVessel\tFlag State\tType\tStart\tEnd\tDays\tCharge Rate\tMonth\tPayday Days\n";
+
     tripBreakdown.rows.forEach(r => {
-      tsv += `${r.client}\t${r.rank}\t${r.vessel}\t${r.location}\t${r.vesselType}\t${r.startDate}\t${r.endDate}\t${r.description}\n`;
+      tsv += `${r.payRateFormatted}\t${r.client}\t${r.rank}\t${r.vessel}\t${r.flagState}\t${r.vesselType}\t${r.startDate}\t${r.endDate}\t${r.description}\t\t${r.chargeRateFormatted}\t\t${r.periodMonth}\t${r.paydayDaysDesc}\n`;
     });
-    copyText(tsv.trim()).then(ok => showToast(ok ? 'Trip breakdown copied (Excel compatible)' : 'Clipboard access denied.'));
+    copyText(tsv.trim()).then(ok => showToast(ok ? `Trip breakdown copied ${s.tbExcludeHeadersOnCopy ? '(without headers)' : '(with headers)'}` : 'Clipboard access denied.'));
   };
 
   const exportReferenceCSV = () => {
@@ -1204,8 +1306,8 @@ export default function CalculatorPage() {
             <p className="text-sm font-bold text-gray-500 uppercase tracking-widest">
               {mode === 'contract' && 'Contract / Day Rate Breakdown'}
               {mode === 'perm' && 'Permanent Placement Summary'}
-              {mode === 'paydays' && 'Payroll Schedule'}
               {mode === 'trip' && 'Trip & Hitch Breakdown Schedule'}
+              {mode === 'paydays' && 'Payroll Schedule'}
               {mode === 'reference' && 'Seafarer Feedback Form'}
             </p>
           </div>
@@ -1272,8 +1374,8 @@ export default function CalculatorPage() {
           <TabsList className="grid w-full max-w-4xl grid-cols-5 mb-8 bg-black/5 dark:bg-white/5 p-1 rounded-xl print:hidden">
             <TabsTrigger value="contract" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><Ship className="h-4 w-4" />Contract</TabsTrigger>
             <TabsTrigger value="perm" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><Briefcase className="h-4 w-4" />Perm</TabsTrigger>
-            <TabsTrigger value="paydays" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><CalendarDays className="h-4 w-4" />Paydays</TabsTrigger>
             <TabsTrigger value="trip" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><CalendarRange className="h-4 w-4" />Trip Breakdown</TabsTrigger>
+            <TabsTrigger value="paydays" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><CalendarDays className="h-4 w-4" />Paydays</TabsTrigger>
             <TabsTrigger value="reference" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><FileCheck className="h-4 w-4" />Reference</TabsTrigger>
           </TabsList>
 
@@ -1326,7 +1428,7 @@ export default function CalculatorPage() {
                         </div>
                         {cFx.error === 'future-date-fallback' && !cFx.isManual && (
                           <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-500 font-medium mt-2">
-                            <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                             <span>Future date selected. Showing today's latest rate instead.</span>
                           </div>
                         )}
@@ -1550,7 +1652,7 @@ export default function CalculatorPage() {
                         </div>
                       </div>
                       <div className="space-y-4">
-                        <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 p-4 rounded-xl space-y-2">
+                        <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-800 p-4 rounded-xl space-y-2">
                           <div className="flex items-center justify-between font-bold text-slate-900 dark:text-slate-50">
                             <span>Days Onboard</span>
                             <span className="font-mono">{formatCurrencyIn(contract.crewTripWorkingTotal, s.cCurrency)}</span>
@@ -1558,7 +1660,7 @@ export default function CalculatorPage() {
                           <div className="text-xs text-slate-500 dark:text-slate-400">{contract.nWorkingDays} days × {formatCurrencyIn(contract.cTotalCharge * contract.crewSize, s.cCurrency)}</div>
                         </div>
 
-                        <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 p-4 rounded-xl space-y-2">
+                        <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-800 p-4 rounded-xl space-y-2">
                           <div className="flex items-center justify-between font-bold text-slate-900 dark:text-slate-50">
                             <span>Travel Days ({contract.nTravelDays})</span>
                             <span className="font-mono">{formatCurrencyIn(contract.crewTripTravelTotal, s.cCurrency)}</span>
@@ -1567,7 +1669,7 @@ export default function CalculatorPage() {
                         </div>
 
                         {contract.crewLogisticsTotal > 0 && (
-                          <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 p-4 rounded-xl flex flex-col gap-2">
+                          <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-800 p-4 rounded-xl flex flex-col gap-2">
                             <div className="flex items-center justify-between font-bold text-slate-900 dark:text-slate-50">
                               <span>Travel & Logistics Costs</span>
                               <span className="font-mono">{formatCurrencyIn(contract.crewLogisticsTotal, s.cCurrency)}</span>
@@ -1727,6 +1829,203 @@ export default function CalculatorPage() {
                   </div>
                </div>
              </div>
+          </TabsContent>
+
+          {/* ─────────────── TRIP BREAKDOWN TAB (Spreadsheet Style) ─────────────── */}
+          <TabsContent value="trip" className="m-0 animate-in fade-in duration-400">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              <div className="lg:col-span-4 flex flex-col gap-6 print:hidden">
+                <CollapsibleCard title="Hitch Parameters" icon={CalendarRange} defaultOpen>
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Client / Company</label>
+                      <TextInput value={s.tbClient} onChange={(v: string) => s.updateField('tbClient', v)} placeholder="e.g. Seamariner Limited" />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Rank / Discipline</label>
+                      <TextInput value={s.tbRank} onChange={(v: string) => s.updateField('tbRank', v)} placeholder="e.g. Master" />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Vessel Name</label>
+                      <TextInput value={s.tbVessel} onChange={(v: string) => s.updateField('tbVessel', v)} placeholder="e.g. Vessel Name" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-2">
+                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Flag State</label>
+                        <TextInput value={s.tbFlagState} onChange={(v: string) => s.updateField('tbFlagState', v)} placeholder="e.g. UK" />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Vessel Type</label>
+                        <TextInput value={s.tbVesselType} onChange={(v: string) => s.updateField('tbVesselType', v)} placeholder="e.g. Tug" />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+                      <div className="space-y-2">
+                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Day Rate ({curSym(s.cCurrency)})</label>
+                        <NumInput value={s.tbDayRate} onChange={(v: string) => s.updateField('tbDayRate', v)} prefix={curSym(s.cCurrency)} placeholder="400.00" />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Management Fee</label>
+                        <NumInput value={s.tbMargin} onChange={(v: string) => s.updateField('tbMargin', v)} suffix="%" placeholder="15" />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+                      <label htmlFor="tb-start" className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Hitch Start Date</label>
+                      <input id="tb-start" type="date" value={s.tbStartDate} onChange={(e) => s.updateField('tbStartDate', e.target.value)} className="w-full px-4 py-2.5 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 text-sm font-medium" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <label htmlFor="tb-end" className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Hitch End Date</label>
+                      <input id="tb-end" type="date" value={s.tbEndDate} onChange={(e) => s.updateField('tbEndDate', e.target.value)} className="w-full px-4 py-2.5 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 text-sm font-medium" />
+                    </div>
+
+                    {/* Travel Start Rate Box */}
+                    <div className="space-y-2.5 pt-4 border-t border-slate-100 dark:border-slate-800">
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">First Day (Travel Mode)</label>
+                      <SegmentedControl 
+                        value={s.tbStartMode} 
+                        onChange={(v: string) => s.updateField('tbStartMode', v as DayRateMode)} 
+                        options={[
+                          { label: 'None', value: 'none' },
+                          { label: '0.5 Day', value: 'half' },
+                          { label: '1 Day', value: 'full' },
+                          { label: 'Custom', value: 'custom' }
+                        ]} 
+                        ariaLabel="First Travel Day Mode" 
+                      />
+                      <AnimatedSection show={s.tbStartMode === 'custom'} className="pt-1">
+                        <NumInput 
+                          value={s.tbStartCustomVal} 
+                          onChange={(v: string) => s.updateField('tbStartCustomVal', v)} 
+                          placeholder="0.5" 
+                          suffix="days" 
+                        />
+                      </AnimatedSection>
+                    </div>
+
+                    {/* Travel End Rate Box */}
+                    <div className="space-y-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Last Day (Travel Mode)</label>
+                      <SegmentedControl 
+                        value={s.tbEndMode} 
+                        onChange={(v: string) => s.updateField('tbEndMode', v as DayRateMode)} 
+                        options={[
+                          { label: 'None', value: 'none' },
+                          { label: '0.5 Day', value: 'half' },
+                          { label: '1 Day', value: 'full' },
+                          { label: 'Custom', value: 'custom' }
+                        ]} 
+                        ariaLabel="Last Travel Day Mode" 
+                      />
+                      <AnimatedSection show={s.tbEndMode === 'custom'} className="pt-1">
+                        <NumInput 
+                          value={s.tbEndCustomVal} 
+                          onChange={(v: string) => s.updateField('tbEndCustomVal', v)} 
+                          placeholder="0.5" 
+                          suffix="days" 
+                        />
+                      </AnimatedSection>
+                    </div>
+                  </div>
+                </CollapsibleCard>
+              </div>
+
+              <div className="lg:col-span-8 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
+                <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                    <div>
+                      <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">Trip Schedule Breakdown</h2>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">Month-by-month itinerary with synced paydays and charge rates</p>
+                    </div>
+                    {tripBreakdown.rows.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-3 print:hidden">
+                        <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-400 cursor-pointer select-none bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 px-2.5 py-1.5 rounded-lg transition-colors border border-black/5 dark:border-white/10">
+                          <input 
+                            type="checkbox" 
+                            checked={s.tbExcludeHeadersOnCopy} 
+                            onChange={(e) => s.updateField('tbExcludeHeadersOnCopy', e.target.checked)} 
+                            className="rounded border-slate-300 dark:border-slate-700 text-slate-900 focus:ring-slate-900 dark:focus:ring-white h-3.5 w-3.5"
+                          />
+                          <span>Exclude Headers</span>
+                        </label>
+                        <ActionButton onClick={copyTripBreakdownSummary} icon={Copy} label="Copy Table" />
+                        <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
+                        <ActionButton onClick={exportTripBreakdownCSV} icon={Download} label="CSV" />
+                      </div>
+                    )}
+                  </div>
+
+                  {tripBreakdown.error ? (
+                    <div className="flex items-center gap-3 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-xl p-4 animate-in fade-in">
+                      <AlertCircle className="h-4 w-4 text-red-500 shrink-0" />
+                      <span className="text-sm font-semibold text-red-600 dark:text-red-400">{tripBreakdown.error}</span>
+                    </div>
+                  ) : tripBreakdown.rows.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center text-center py-16 px-6 animate-in fade-in duration-500 print:hidden">
+                      <div className="p-4 bg-black/5 dark:bg-white/10 rounded-full mb-4">
+                        <CalendarRange className="h-8 w-8 text-slate-900 dark:text-cyan-400" />
+                      </div>
+                      <h3 className="text-xl font-bold mb-2 text-slate-900 dark:text-slate-50">Select Dates</h3>
+                      <p className="text-slate-500 dark:text-slate-400 font-medium max-w-sm">
+                        Enter trip start and finish dates to automatically generate monthly split rows.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm print:border-gray-300">
+                      <table className="w-full text-left text-xs sm:text-sm border-collapse font-medium">
+                        <thead>
+                          <tr className="bg-slate-100/75 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs uppercase tracking-wider print:bg-gray-100 print:text-black">
+                            <th className="py-3 px-3">Pay Rate</th>
+                            <th className="py-3 px-3">Client</th>
+                            <th className="py-3 px-3">Rank</th>
+                            <th className="py-3 px-3">Vessel</th>
+                            <th className="py-3 px-3">Flag State</th>
+                            <th className="py-3 px-3">Type</th>
+                            <th className="py-3 px-3">Start</th>
+                            <th className="py-3 px-3">End</th>
+                            <th className="py-3 px-3">Days</th>
+                            <th className="py-3 px-3">Charge Rate</th>
+                            <th className="py-3 px-3">Month</th>
+                            <th className="py-3 px-3 text-right">Payday Days</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 print:divide-gray-200">
+                          {tripBreakdown.rows.map((row, idx) => (
+                            <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors text-slate-900 dark:text-slate-200 print:text-black">
+                              <td className="py-3 px-3 font-mono font-bold">{row.payRateFormatted || '-'}</td>
+                              <td className="py-3 px-3 font-semibold">{row.client}</td>
+                              <td className="py-3 px-3">{row.rank}</td>
+                              <td className="py-3 px-3">{row.vessel}</td>
+                              <td className="py-3 px-3">{row.flagState}</td>
+                              <td className="py-3 px-3">{row.vesselType}</td>
+                              <td className="py-3 px-3 font-mono tabular-nums">{row.startDate}</td>
+                              <td className="py-3 px-3 font-mono tabular-nums">{row.endDate}</td>
+                              <td className="py-3 px-3 font-mono font-bold text-cyan-600 dark:text-cyan-400 print:text-black tabular-nums">{row.description}</td>
+                              <td className="py-3 px-3 font-mono font-bold">{row.chargeRateFormatted || '-'}</td>
+                              <td className="py-3 px-3 font-mono text-slate-500 dark:text-slate-400">{row.periodMonth || '-'}</td>
+                              <td className="py-3 px-3 font-mono font-bold text-right text-emerald-600 dark:text-emerald-400 print:text-black tabular-nums">{row.paydayDaysDesc || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="bg-slate-50 dark:bg-slate-800/30 font-bold text-slate-900 dark:text-slate-50 border-t-2 border-slate-200 dark:border-slate-800 print:border-gray-300 print:bg-transparent print:text-black">
+                            <td colSpan={8} className="py-3 px-3 text-right text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 print:text-gray-600">Total Duration:</td>
+                            <td className="py-3 px-3 font-mono text-base text-cyan-600 dark:text-cyan-400 print:text-black">
+                              {tripBreakdown.rows.reduce((acc, r) => acc + r.rawDays, 0)} Days
+                            </td>
+                            <td colSpan={3} className="py-3 px-3 font-mono text-right text-base text-emerald-600 dark:text-emerald-400 print:text-black">
+                              {paydays.totalDays ? `${paydays.totalDays} Payable Days` : ''}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </TabsContent>
 
           {/* ─────────────── PAYMENT DAYS TAB ─────────────── */}
@@ -1933,172 +2232,6 @@ export default function CalculatorPage() {
                           </div>
                         ))}
                       </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </TabsContent>
-
-          {/* ─────────────── TRIP BREAKDOWN TAB (Spreadsheet Style) ─────────────── */}
-          <TabsContent value="trip" className="m-0 animate-in fade-in duration-400">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              <div className="lg:col-span-5 flex flex-col gap-6 print:hidden">
-                <CollapsibleCard title="Hitch Parameters" icon={CalendarRange} defaultOpen>
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Client / Company</label>
-                      <TextInput value={s.tbClient} onChange={(v: string) => s.updateField('tbClient', v)} placeholder="e.g. Seamariner Limited" />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Rank / Discipline</label>
-                      <TextInput value={s.tbRank} onChange={(v: string) => s.updateField('tbRank', v)} placeholder="e.g. Able Seaman" />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Vessel Name</label>
-                      <TextInput value={s.tbVessel} onChange={(v: string) => s.updateField('tbVessel', v)} placeholder="e.g. Vessel Name" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-2">
-                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Location</label>
-                        <TextInput value={s.tbLocation} onChange={(v: string) => s.updateField('tbLocation', v)} placeholder="e.g. UK" />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Vessel Type</label>
-                        <TextInput value={s.tbVesselType} onChange={(v: string) => s.updateField('tbVesselType', v)} placeholder="e.g. Multicat" />
-                      </div>
-                    </div>
-
-                    <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-slate-800">
-                      <label htmlFor="tb-start" className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Hitch Start Date</label>
-                      <input id="tb-start" type="date" value={s.tbStartDate} onChange={(e) => s.updateField('tbStartDate', e.target.value)} className="w-full px-4 py-2.5 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 text-sm font-medium" />
-                    </div>
-
-                    <div className="space-y-2">
-                      <label htmlFor="tb-end" className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Hitch End Date</label>
-                      <input id="tb-end" type="date" value={s.tbEndDate} onChange={(e) => s.updateField('tbEndDate', e.target.value)} className="w-full px-4 py-2.5 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 text-sm font-medium" />
-                    </div>
-
-                    {/* Travel Start Rate Box */}
-                    <div className="space-y-2.5 pt-4 border-t border-slate-100 dark:border-slate-800">
-                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">First Day (Travel Mode)</label>
-                      <SegmentedControl 
-                        value={s.tbStartMode} 
-                        onChange={(v: string) => s.updateField('tbStartMode', v as DayRateMode)} 
-                        options={[
-                          { label: 'None', value: 'none' },
-                          { label: '0.5 Day', value: 'half' },
-                          { label: '1 Day', value: 'full' },
-                          { label: 'Custom', value: 'custom' }
-                        ]} 
-                        ariaLabel="First Travel Day Mode" 
-                      />
-                      <AnimatedSection show={s.tbStartMode === 'custom'} className="pt-1">
-                        <NumInput 
-                          value={s.tbStartCustomVal} 
-                          onChange={(v: string) => s.updateField('tbStartCustomVal', v)} 
-                          placeholder="0.5" 
-                          suffix="days" 
-                        />
-                      </AnimatedSection>
-                    </div>
-
-                    {/* Travel End Rate Box */}
-                    <div className="space-y-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
-                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Last Day (Travel Mode)</label>
-                      <SegmentedControl 
-                        value={s.tbEndMode} 
-                        onChange={(v: string) => s.updateField('tbEndMode', v as DayRateMode)} 
-                        options={[
-                          { label: 'None', value: 'none' },
-                          { label: '0.5 Day', value: 'half' },
-                          { label: '1 Day', value: 'full' },
-                          { label: 'Custom', value: 'custom' }
-                        ]} 
-                        ariaLabel="Last Travel Day Mode" 
-                      />
-                      <AnimatedSection show={s.tbEndMode === 'custom'} className="pt-1">
-                        <NumInput 
-                          value={s.tbEndCustomVal} 
-                          onChange={(v: string) => s.updateField('tbEndCustomVal', v)} 
-                          placeholder="0.5" 
-                          suffix="days" 
-                        />
-                      </AnimatedSection>
-                    </div>
-                  </div>
-                </CollapsibleCard>
-              </div>
-
-              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
-                <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-                    <div>
-                      <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">Trip Schedule Breakdown</h2>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">Month-by-month itinerary aligned with seafarer timesheets</p>
-                    </div>
-                    {tripBreakdown.rows.length > 0 && (
-                      <div className="flex items-center gap-2 print:hidden">
-                        <ActionButton onClick={copyTripBreakdownSummary} icon={Copy} label="Copy Table" />
-                        <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
-                        <ActionButton onClick={exportTripBreakdownCSV} icon={Download} label="CSV" />
-                      </div>
-                    )}
-                  </div>
-
-                  {tripBreakdown.error ? (
-                    <div className="flex items-center gap-3 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-xl p-4 animate-in fade-in">
-                      <AlertCircle className="h-4 w-4 text-red-500 shrink-0" />
-                      <span className="text-sm font-semibold text-red-600 dark:text-red-400">{tripBreakdown.error}</span>
-                    </div>
-                  ) : tripBreakdown.rows.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center text-center py-16 px-6 animate-in fade-in duration-500 print:hidden">
-                      <div className="p-4 bg-black/5 dark:bg-white/10 rounded-full mb-4">
-                        <CalendarRange className="h-8 w-8 text-slate-900 dark:text-cyan-400" />
-                      </div>
-                      <h3 className="text-xl font-bold mb-2 text-slate-900 dark:text-slate-50">Select Dates</h3>
-                      <p className="text-slate-500 dark:text-slate-400 font-medium max-w-sm">
-                        Enter trip start and finish dates to automatically generate monthly split rows.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm print:border-gray-300">
-                      <table className="w-full text-left text-sm border-collapse font-medium">
-                        <thead>
-                          <tr className="bg-slate-100/75 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs uppercase tracking-wider print:bg-gray-100 print:text-black">
-                            <th className="py-3.5 px-4">Client</th>
-                            <th className="py-3.5 px-4">Rank</th>
-                            <th className="py-3.5 px-4">Vessel</th>
-                            <th className="py-3.5 px-4">Location</th>
-                            <th className="py-3.5 px-4">Vessel Type</th>
-                            <th className="py-3.5 px-4">Start Date</th>
-                            <th className="py-3.5 px-4">End Date</th>
-                            <th className="py-3.5 px-4 text-right">Days</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 print:divide-gray-200">
-                          {tripBreakdown.rows.map((row, idx) => (
-                            <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors text-slate-900 dark:text-slate-200 print:text-black">
-                              <td className="py-3.5 px-4 font-semibold">{row.client}</td>
-                              <td className="py-3.5 px-4">{row.rank}</td>
-                              <td className="py-3.5 px-4">{row.vessel}</td>
-                              <td className="py-3.5 px-4">{row.location}</td>
-                              <td className="py-3.5 px-4">{row.vesselType}</td>
-                              <td className="py-3.5 px-4 font-mono tabular-nums">{row.startDate}</td>
-                              <td className="py-3.5 px-4 font-mono tabular-nums">{row.endDate}</td>
-                              <td className="py-3.5 px-4 font-mono font-bold text-right text-cyan-600 dark:text-cyan-400 print:text-black tabular-nums">{row.description}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                        <tfoot>
-                          <tr className="bg-slate-50 dark:bg-slate-800/30 font-bold text-slate-900 dark:text-slate-50 border-t-2 border-slate-200 dark:border-slate-800 print:border-gray-300 print:bg-transparent print:text-black">
-                            <td colSpan={7} className="py-3 px-4 text-right text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 print:text-gray-600">Total Hitch Duration:</td>
-                            <td className="py-3 px-4 font-mono text-right text-base text-emerald-600 dark:text-emerald-400 print:text-black">
-                              {tripBreakdown.rows.reduce((acc, r) => acc + r.rawDays, 0)} Days
-                            </td>
-                          </tr>
-                        </tfoot>
-                      </table>
                     </div>
                   )}
                 </div>
