@@ -7,7 +7,8 @@ import { Switch } from '@/components/ui/switch';
 import {
   RotateCcw, Briefcase, FileText, UtensilsCrossed, 
   CalendarDays, Globe, RefreshCw, AlertCircle, Copy, Download, Printer, 
-  ChevronDown, Check, Info, Ship, Anchor, Save, Users, FileCheck, Sun, Moon, Trash2
+  ChevronDown, Check, Info, Ship, Anchor, Save, Users, FileCheck, Sun, Moon, Trash2,
+  CalendarRange
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Logo from './Logo';
@@ -16,6 +17,7 @@ import Logo from './Logo';
 
 export type CurrencyCode = 'EUR' | 'USD' | 'GBP' | 'CHF' | 'AUD' | 'CAD';
 export type TaxProfile = '2024/2025' | '2025/2026' | '2026/2027' | '2027/2028';
+export type DayRateMode = 'none' | 'half' | 'full' | 'custom';
 
 export interface FiscalRates {
   pension: number;
@@ -71,6 +73,18 @@ export interface PaydayParams {
   pdFinishCustomVal: string;
 }
 
+export interface TripBreakdownRow {
+  client: string;
+  rank: string;
+  vessel: string;
+  location: string;
+  vesselType: string;
+  startDate: string;
+  endDate: string;
+  description: string;
+  rawDays: number;
+}
+
 const CURRENCIES: CurrencyCode[] = ['EUR', 'USD', 'GBP', 'CHF', 'AUD', 'CAD'];
 const curSym = (c: CurrencyCode) => ({ GBP: '£', EUR: '€', USD: '$', CHF: 'CHF', AUD: 'A$', CAD: 'C$' }[c] || '£');
 
@@ -124,6 +138,13 @@ const formatNumber = (val: number) => numberFormatter.format(val);
 const ukDateFormatter = new Intl.DateTimeFormat('en-GB');
 const formatUK = (d: Date) => ukDateFormatter.format(d);
 
+const formatShortUK = (d: Date): string => {
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = String(d.getFullYear()).slice(-2);
+  return `${day}/${month}/${year}`;
+};
+
 const parseDate = (s: string): Date => {
   const [y, m, d] = s.split('-').map(Number);
   return new Date(y, m - 1, d, 12, 0, 0, 0); 
@@ -146,7 +167,7 @@ async function copyText(text: string): Promise<boolean> {
   return false;
 }
 
-// ─── 2. Pure Mathematical Calculation Engines ──────────────────────────────────
+// ─── 2. Calculation Engines ───────────────────────────────────────────────────
 
 function calculateContract(params: ContractParams, fiscalRates: FiscalRates) {
   const crewSize = Math.max(1, parseInt(params.crewSize) || 1);
@@ -254,14 +275,12 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
 
   const isWorkingDay = (d: Date) => !isWeekend(d) && !bankHolidays.has(isoDate(d));
 
-  // Monthly payday: 28th, walking back to previous working day over weekends & bank holidays
   const monthlyPayday = (y: number, m: number) => {
     let d = new Date(y, m, 28, 12, 0, 0, 0);
     while (!isWorkingDay(d)) d = addDays(d, -1);
     return d;
   };
 
-  // Fortnightly payday: raw anchor + n×14 days, walked back if it lands on a weekend or bank holiday
   const fnPayday = (idx: number) => {
     let d = addDays(FN_ANCHOR, idx * 14);
     while (!isWorkingDay(d)) d = addDays(d, -1);
@@ -273,9 +292,7 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
 
     if (params.pdPayrollType === 'fortnightly') {
       let idx = Math.floor(Math.round((start.getTime() - FN_ANCHOR.getTime()) / 86400000) / 14);
-      // Walk back if needed so we don't miss the first relevant cut-off
       while (sundayBefore(fnPayday(idx - 1)).getTime() >= start.getTime()) idx--;
-      // Advance until cut-off >= start
       while (sundayBefore(fnPayday(idx)).getTime() < start.getTime()) idx++;
       for (;;) {
         const payday = fnPayday(idx);
@@ -285,7 +302,6 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
         idx++;
       }
     } else {
-      // Monthly: cut-off is the 20th; payday is the bank-holiday-adjusted 28th
       let year = start.getFullYear(), month = start.getMonth();
       for (let i = 0; i < 25; i++) {
         const cutoff = new Date(year, month, 20, 12, 0, 0, 0);
@@ -339,6 +355,104 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
   } catch {
     return { splits: [], error: 'Calculation failed.' };
   }
+}
+
+// ─── Monthly Trip Breakdown Engine ───────────────────────────────────────────
+
+function generateMonthlyTripBreakdown(
+  startDateStr: string,
+  endDateStr: string,
+  client: string,
+  rank: string,
+  vessel: string,
+  location: string,
+  vesselType: string,
+  startMode: DayRateMode,
+  startCustomVal: string,
+  endMode: DayRateMode,
+  endCustomVal: string
+): { rows: TripBreakdownRow[]; error: string | null } {
+  if (!startDateStr || !endDateStr) return { rows: [], error: null };
+  const overallStart = parseDate(startDateStr);
+  const overallEnd = parseDate(endDateStr);
+
+  if (overallEnd < overallStart) {
+    return { rows: [], error: 'End date cannot be prior to start date.' };
+  }
+
+  const rows: TripBreakdownRow[] = [];
+
+  const getDayValue = (mode: DayRateMode, customVal: string): number => {
+    if (mode === 'half') return 0.5;
+    if (mode === 'full') return 1;
+    if (mode === 'custom') return Math.max(0, parseFloat(customVal) || 0);
+    return 0;
+  };
+
+  const formatDayDesc = (val: number, isTravel = true): string => {
+    const formatted = val % 1 === 0 ? val.toString() : val.toFixed(1);
+    return isTravel ? `${formatted} Day${val !== 1 ? 's' : ''} (Travel)` : `${formatted} Day${val !== 1 ? 's' : ''}`;
+  };
+
+  // 1. Initial Travel Day (if active)
+  let currentStart = new Date(overallStart);
+  if (startMode !== 'none') {
+    const sVal = getDayValue(startMode, startCustomVal);
+    rows.push({
+      client, rank, vessel, location, vesselType,
+      startDate: formatShortUK(currentStart),
+      endDate: formatShortUK(currentStart),
+      description: formatDayDesc(sVal, true),
+      rawDays: sVal
+    });
+    currentStart = addDays(currentStart, 1);
+  }
+
+  // 2. Determine working end date
+  let workingEnd = new Date(overallEnd);
+  let travelEndDate: Date | null = null;
+  if (endMode !== 'none') {
+    if (workingEnd >= currentStart) {
+      travelEndDate = new Date(workingEnd);
+      workingEnd = addDays(workingEnd, -1);
+    }
+  }
+
+  // 3. Monthly Split for Onboard Hitch
+  if (currentStart <= workingEnd) {
+    let curr = new Date(currentStart);
+    while (curr <= workingEnd) {
+      const year = curr.getFullYear();
+      const month = curr.getMonth();
+      const lastDayOfMonth = new Date(year, month + 1, 0, 12, 0, 0, 0);
+      const chunkEnd = workingEnd < lastDayOfMonth ? new Date(workingEnd) : lastDayOfMonth;
+
+      const diffDays = Math.round((chunkEnd.getTime() - curr.getTime()) / 86400000) + 1;
+      rows.push({
+        client, rank, vessel, location, vesselType,
+        startDate: formatShortUK(curr),
+        endDate: formatShortUK(chunkEnd),
+        description: `${diffDays} Day${diffDays > 1 ? 's' : ''}`,
+        rawDays: diffDays
+      });
+
+      curr = addDays(chunkEnd, 1);
+    }
+  }
+
+  // 4. Final Travel Day (if active)
+  if (endMode !== 'none' && travelEndDate) {
+    const eVal = getDayValue(endMode, endCustomVal);
+    rows.push({
+      client, rank, vessel, location, vesselType,
+      startDate: formatShortUK(travelEndDate),
+      endDate: formatShortUK(travelEndDate),
+      description: formatDayDesc(eVal, true),
+      rawDays: eVal
+    });
+  }
+
+  return { rows, error: null };
 }
 
 // ─── 3. Global Zustand Store ──────────────────────────────────────────────────
@@ -415,6 +529,19 @@ interface AppState {
   refComments: string;
   displayCurrency: 'original' | 'gbp';
 
+  // Trip Breakdown Specific Fields
+  tbClient: string;
+  tbRank: string;
+  tbVessel: string;
+  tbLocation: string;
+  tbVesselType: string;
+  tbStartDate: string;
+  tbEndDate: string;
+  tbStartMode: DayRateMode;
+  tbStartCustomVal: string;
+  tbEndMode: DayRateMode;
+  tbEndCustomVal: string;
+
   savedPresets: Record<string, Partial<AppState>>;
   updateField: <K extends keyof AppState>(field: K, value: AppState[K]) => void;
   resetToDefaults: () => void;
@@ -433,7 +560,20 @@ const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPre
   pdIncludeSubsistence: false, pdSubsistenceRate: '', pdIncludePay: false, pdDayRate: '', pdAdvance: '',
   refSeafarerName: '', refDiscipline: '', refCompany: '', refVessel: '', refDates: '', refCompetence: '',
   refFlexibility: '', refInitiative: '', refSafety: '', refSecurity: '', refTimeKeeping: '',
-  refCommunication: '', refRelationships: '', refOverall: '', refDrugsPolicy: '', refReHire: '', refComments: '', displayCurrency: 'original'
+  refCommunication: '', refRelationships: '', refOverall: '', refDrugsPolicy: '', refReHire: '', refComments: '', displayCurrency: 'original',
+
+  // Clean empty defaults for Trip Breakdown tab
+  tbClient: '',
+  tbRank: '',
+  tbVessel: '',
+  tbLocation: '',
+  tbVesselType: '',
+  tbStartDate: '',
+  tbEndDate: '',
+  tbStartMode: 'full',
+  tbStartCustomVal: '0.5',
+  tbEndMode: 'full',
+  tbEndCustomVal: '0.5'
 };
 
 const useStore = create<AppState>()(
@@ -450,7 +590,7 @@ const useStore = create<AppState>()(
       })
     }),
     { 
-      name: 'maritime-hq-v6', 
+      name: 'maritime-hq-v9', 
       merge: (persistedState: any, currentState) => {
         return { ...currentState, ...persistedState, savedPresets: persistedState?.savedPresets || {} };
       }
@@ -518,8 +658,6 @@ function useFxRate(currency: CurrencyCode, baseDate: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-
-  // New state for manual overrides
   const [isManual, setIsManual] = useState(false);
   const [manualRate, setManualRate] = useState<string>('');
 
@@ -538,21 +676,20 @@ function useFxRate(currency: CurrencyCode, baseDate: string) {
       .then(data => {
         if (!cancelled && data?.rates?.GBP) {
           setRate(data.rates.GBP);
-          setManualRate(data.rates.GBP.toString()); // Pre-fill manual input just in case
+          setManualRate(data.rates.GBP.toString());
           if (datePart === 'latest' && baseDate > new Date().toISOString().slice(0, 10)) setError('future-date-fallback');
         }
       })
       .catch(() => { 
         if (!cancelled) {
           setError('Exchange rate service offline.');
-          setIsManual(true); // Force manual mode if API dies
+          setIsManual(true);
         }
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [currency, baseDate, refreshKey, isManual]);
 
-  // Return the active rate based on mode
   const activeRate = isManual ? (parseFloat(manualRate) || null) : rate;
 
   return { 
@@ -637,7 +774,7 @@ interface ActionButtonProps {
   onClick: () => void;
   icon: React.ElementType;
   label: string;
-  }
+}
 const ActionButton = ({ onClick, icon: Icon, label }: ActionButtonProps) => (
   <button onClick={onClick} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white print:hidden" title={label} aria-label={label}>
     <Icon className="h-3.5 w-3.5" /><span className="hidden sm:inline">{label}</span>
@@ -693,21 +830,19 @@ const Tooltip = ({ text }: TooltipProps) => (
 export default function CalculatorPage() {
   const s = useStore();
 
-  // 🚨 EMERGENCY FAILSAFE: If browser cache is corrupted, forcefully reset it
   useEffect(() => {
     if (!s || !s.updateField || !s.taxYear || !FISCAL_PROFILES[s.taxYear]) {
       console.error("Corrupted state detected. Resetting to defaults.");
-      localStorage.removeItem('maritime-hq-v6');
+      localStorage.removeItem('maritime-hq-v9');
       window.location.reload();
     }
   }, [s]);
 
-  // Prevent render crash while reloading
   if (!s || !s.updateField || !s.taxYear || !FISCAL_PROFILES[s.taxYear]) return null;
 
   const { showToast, showUndoToast, ToastContainer } = useToast();
   const bankHolidays = useBankHolidays();
-  const [mode, setMode] = useState<'contract' | 'perm' | 'paydays' | 'reference'>('contract');
+  const [mode, setMode] = useState<'contract' | 'perm' | 'paydays' | 'trip' | 'reference'>('contract');
   const [newPresetName, setNewPresetName] = useState('');
   const [selectedPreset, setSelectedPreset] = useState('');
   const [subDaysOverrides, setSubDaysOverrides] = useState<Record<number, string>>({});
@@ -716,7 +851,6 @@ export default function CalculatorPage() {
   const cFx = useFxRate(s.cCurrency, s.cFxDate);
   const pFx = useFxRate(s.pCurrency, s.pFxDate);
 
-  // Sync Theme to HTML Document
   useEffect(() => {
     const root = window.document.documentElement;
     if (s.theme === 'dark') {
@@ -728,7 +862,6 @@ export default function CalculatorPage() {
 
   const toggleTheme = () => s.updateField('theme', s.theme === 'light' ? 'dark' : 'light');
 
-  // Debounced inputs for mathematical performance
   const dbConsolidatedRate = useDebounce(s.consolidatedRate, 300);
   const dbMargin = useDebounce(s.margin, 300);
   const dbContingencyValue = useDebounce(s.contingencyValue, 300);
@@ -744,7 +877,6 @@ export default function CalculatorPage() {
   const dbSalary = useDebounce(s.salary, 300);
   const dbPlacementFee = useDebounce(s.placementFee, 300);
 
-  // URL State Syncing
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     params.set('mode', mode);
@@ -763,8 +895,6 @@ export default function CalculatorPage() {
 
   const savePreset = () => {
     if (!newPresetName.trim()) return showToast('Please enter a preset name');
-
-    // Safely exclude functions when saving state to prevent overwriting them later
     const stateToSave = Object.fromEntries(
       Object.entries(useStore.getState()).filter(([_, value]) => typeof value !== 'function')
     ) as Partial<AppState>;
@@ -801,7 +931,6 @@ export default function CalculatorPage() {
     const subAmt = s.pdIncludeSubsistence ? parseFloat(s.pdSubsistenceRate) || 0 : 0;
     let workingSplits = rawPaydays.splits;
 
-    // If merge is on and there are at least 2 periods, fold the last period's days into the previous one
     if (s.pdMergeLastPeriod && workingSplits.length >= 2) {
       const last = workingSplits[workingSplits.length - 1];
       const prev = workingSplits[workingSplits.length - 2];
@@ -823,6 +952,23 @@ export default function CalculatorPage() {
 
   const pdTotalGross = (paydays.totalDays || 0) * (parseFloat(s.pdDayRate) || 0);
   const pdTotalNet = pdTotalGross + (paydays.totalSub || 0) - (parseFloat(s.pdAdvance) || 0);
+
+  // ─── Trip Breakdown Logic ───
+  const tripBreakdown = useMemo(() => {
+    return generateMonthlyTripBreakdown(
+      s.tbStartDate,
+      s.tbEndDate,
+      s.tbClient || '-',
+      s.tbRank || '-',
+      s.tbVessel || '-',
+      s.tbLocation || '-',
+      s.tbVesselType || '-',
+      s.tbStartMode,
+      s.tbStartCustomVal,
+      s.tbEndMode,
+      s.tbEndCustomVal
+    );
+  }, [s.tbStartDate, s.tbEndDate, s.tbClient, s.tbRank, s.tbVessel, s.tbLocation, s.tbVesselType, s.tbStartMode, s.tbStartCustomVal, s.tbEndMode, s.tbEndCustomVal]);
 
   // ─── Export Functions ───
   const downloadCSV = (filename: string, headers: string, rows: string) => {
@@ -856,6 +1002,24 @@ export default function CalculatorPage() {
     if (s.includePermNI) rows += `"Employer NI",${perm.pEmployerNI}\n`;
     rows += `"Total Cost",${s.includePermNI ? perm.pTotalCost : perm.pPlacementFee}\n`;
     downloadCSV('perm_breakdown.csv', headers, rows);
+  };
+
+  const exportTripBreakdownCSV = () => {
+    if (!tripBreakdown.rows.length) return;
+    const headers = "Client,Rank,Vessel,Location,Vessel Type,Start Date,End Date,Days\n";
+    const rows = tripBreakdown.rows.map(r => 
+      `"${r.client}","${r.rank}","${r.vessel}","${r.location}","${r.vesselType}","${r.startDate}","${r.endDate}","${r.description}"`
+    ).join("\n");
+    downloadCSV(`trip_breakdown_${s.tbStartDate || 'start'}_to_${s.tbEndDate || 'end'}.csv`, headers, rows);
+  };
+
+  const copyTripBreakdownSummary = () => {
+    if (!tripBreakdown.rows.length) return;
+    let tsv = `Client\tRank\tVessel\tLocation\tVessel Type\tStart Date\tEnd Date\tDays\n`;
+    tripBreakdown.rows.forEach(r => {
+      tsv += `${r.client}\t${r.rank}\t${r.vessel}\t${r.location}\t${r.vesselType}\t${r.startDate}\t${r.endDate}\t${r.description}\n`;
+    });
+    copyText(tsv.trim()).then(ok => showToast(ok ? 'Trip breakdown copied (Excel compatible)' : 'Clipboard access denied.'));
   };
 
   const exportReferenceCSV = () => {
@@ -1041,6 +1205,7 @@ export default function CalculatorPage() {
               {mode === 'contract' && 'Contract / Day Rate Breakdown'}
               {mode === 'perm' && 'Permanent Placement Summary'}
               {mode === 'paydays' && 'Payroll Schedule'}
+              {mode === 'trip' && 'Trip & Hitch Breakdown Schedule'}
               {mode === 'reference' && 'Seafarer Feedback Form'}
             </p>
           </div>
@@ -1104,10 +1269,11 @@ export default function CalculatorPage() {
         )}
 
         <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)} className="w-full">
-          <TabsList className="grid w-full max-w-3xl grid-cols-4 mb-8 bg-black/5 dark:bg-white/5 p-1 rounded-xl print:hidden">
+          <TabsList className="grid w-full max-w-4xl grid-cols-5 mb-8 bg-black/5 dark:bg-white/5 p-1 rounded-xl print:hidden">
             <TabsTrigger value="contract" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><Ship className="h-4 w-4" />Contract</TabsTrigger>
             <TabsTrigger value="perm" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><Briefcase className="h-4 w-4" />Perm</TabsTrigger>
             <TabsTrigger value="paydays" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><CalendarDays className="h-4 w-4" />Paydays</TabsTrigger>
+            <TabsTrigger value="trip" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><CalendarRange className="h-4 w-4" />Trip Breakdown</TabsTrigger>
             <TabsTrigger value="reference" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><FileCheck className="h-4 w-4" />Reference</TabsTrigger>
           </TabsList>
 
@@ -1292,7 +1458,6 @@ export default function CalculatorPage() {
                     </div>
                   </div>
 
-                  {/* Recharts Visualization */}
                   <div className="h-24 w-full mb-6 print:hidden">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
@@ -1385,7 +1550,6 @@ export default function CalculatorPage() {
                         </div>
                       </div>
                       <div className="space-y-4">
-
                         <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 p-4 rounded-xl space-y-2">
                           <div className="flex items-center justify-between font-bold text-slate-900 dark:text-slate-50">
                             <span>Days Onboard</span>
@@ -1776,6 +1940,172 @@ export default function CalculatorPage() {
             </div>
           </TabsContent>
 
+          {/* ─────────────── TRIP BREAKDOWN TAB (Spreadsheet Style) ─────────────── */}
+          <TabsContent value="trip" className="m-0 animate-in fade-in duration-400">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              <div className="lg:col-span-5 flex flex-col gap-6 print:hidden">
+                <CollapsibleCard title="Hitch Parameters" icon={CalendarRange} defaultOpen>
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Client / Company</label>
+                      <TextInput value={s.tbClient} onChange={(v: string) => s.updateField('tbClient', v)} placeholder="e.g. Seamariner Limited" />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Rank / Discipline</label>
+                      <TextInput value={s.tbRank} onChange={(v: string) => s.updateField('tbRank', v)} placeholder="e.g. Able Seaman" />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Vessel Name</label>
+                      <TextInput value={s.tbVessel} onChange={(v: string) => s.updateField('tbVessel', v)} placeholder="e.g. Vessel Name" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-2">
+                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Location</label>
+                        <TextInput value={s.tbLocation} onChange={(v: string) => s.updateField('tbLocation', v)} placeholder="e.g. UK" />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Vessel Type</label>
+                        <TextInput value={s.tbVesselType} onChange={(v: string) => s.updateField('tbVesselType', v)} placeholder="e.g. Multicat" />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+                      <label htmlFor="tb-start" className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Hitch Start Date</label>
+                      <input id="tb-start" type="date" value={s.tbStartDate} onChange={(e) => s.updateField('tbStartDate', e.target.value)} className="w-full px-4 py-2.5 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 text-sm font-medium" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <label htmlFor="tb-end" className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Hitch End Date</label>
+                      <input id="tb-end" type="date" value={s.tbEndDate} onChange={(e) => s.updateField('tbEndDate', e.target.value)} className="w-full px-4 py-2.5 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 text-sm font-medium" />
+                    </div>
+
+                    {/* Travel Start Rate Box */}
+                    <div className="space-y-2.5 pt-4 border-t border-slate-100 dark:border-slate-800">
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">First Day (Travel Mode)</label>
+                      <SegmentedControl 
+                        value={s.tbStartMode} 
+                        onChange={(v: string) => s.updateField('tbStartMode', v as DayRateMode)} 
+                        options={[
+                          { label: 'None', value: 'none' },
+                          { label: '0.5 Day', value: 'half' },
+                          { label: '1 Day', value: 'full' },
+                          { label: 'Custom', value: 'custom' }
+                        ]} 
+                        ariaLabel="First Travel Day Mode" 
+                      />
+                      <AnimatedSection show={s.tbStartMode === 'custom'} className="pt-1">
+                        <NumInput 
+                          value={s.tbStartCustomVal} 
+                          onChange={(v: string) => s.updateField('tbStartCustomVal', v)} 
+                          placeholder="0.5" 
+                          suffix="days" 
+                        />
+                      </AnimatedSection>
+                    </div>
+
+                    {/* Travel End Rate Box */}
+                    <div className="space-y-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Last Day (Travel Mode)</label>
+                      <SegmentedControl 
+                        value={s.tbEndMode} 
+                        onChange={(v: string) => s.updateField('tbEndMode', v as DayRateMode)} 
+                        options={[
+                          { label: 'None', value: 'none' },
+                          { label: '0.5 Day', value: 'half' },
+                          { label: '1 Day', value: 'full' },
+                          { label: 'Custom', value: 'custom' }
+                        ]} 
+                        ariaLabel="Last Travel Day Mode" 
+                      />
+                      <AnimatedSection show={s.tbEndMode === 'custom'} className="pt-1">
+                        <NumInput 
+                          value={s.tbEndCustomVal} 
+                          onChange={(v: string) => s.updateField('tbEndCustomVal', v)} 
+                          placeholder="0.5" 
+                          suffix="days" 
+                        />
+                      </AnimatedSection>
+                    </div>
+                  </div>
+                </CollapsibleCard>
+              </div>
+
+              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
+                <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                    <div>
+                      <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">Trip Schedule Breakdown</h2>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">Month-by-month itinerary aligned with seafarer timesheets</p>
+                    </div>
+                    {tripBreakdown.rows.length > 0 && (
+                      <div className="flex items-center gap-2 print:hidden">
+                        <ActionButton onClick={copyTripBreakdownSummary} icon={Copy} label="Copy Table" />
+                        <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
+                        <ActionButton onClick={exportTripBreakdownCSV} icon={Download} label="CSV" />
+                      </div>
+                    )}
+                  </div>
+
+                  {tripBreakdown.error ? (
+                    <div className="flex items-center gap-3 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-xl p-4 animate-in fade-in">
+                      <AlertCircle className="h-4 w-4 text-red-500 shrink-0" />
+                      <span className="text-sm font-semibold text-red-600 dark:text-red-400">{tripBreakdown.error}</span>
+                    </div>
+                  ) : tripBreakdown.rows.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center text-center py-16 px-6 animate-in fade-in duration-500 print:hidden">
+                      <div className="p-4 bg-black/5 dark:bg-white/10 rounded-full mb-4">
+                        <CalendarRange className="h-8 w-8 text-slate-900 dark:text-cyan-400" />
+                      </div>
+                      <h3 className="text-xl font-bold mb-2 text-slate-900 dark:text-slate-50">Select Dates</h3>
+                      <p className="text-slate-500 dark:text-slate-400 font-medium max-w-sm">
+                        Enter trip start and finish dates to automatically generate monthly split rows.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm print:border-gray-300">
+                      <table className="w-full text-left text-sm border-collapse font-medium">
+                        <thead>
+                          <tr className="bg-slate-100/75 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs uppercase tracking-wider print:bg-gray-100 print:text-black">
+                            <th className="py-3.5 px-4">Client</th>
+                            <th className="py-3.5 px-4">Rank</th>
+                            <th className="py-3.5 px-4">Vessel</th>
+                            <th className="py-3.5 px-4">Location</th>
+                            <th className="py-3.5 px-4">Vessel Type</th>
+                            <th className="py-3.5 px-4">Start Date</th>
+                            <th className="py-3.5 px-4">End Date</th>
+                            <th className="py-3.5 px-4 text-right">Days</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 print:divide-gray-200">
+                          {tripBreakdown.rows.map((row, idx) => (
+                            <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors text-slate-900 dark:text-slate-200 print:text-black">
+                              <td className="py-3.5 px-4 font-semibold">{row.client}</td>
+                              <td className="py-3.5 px-4">{row.rank}</td>
+                              <td className="py-3.5 px-4">{row.vessel}</td>
+                              <td className="py-3.5 px-4">{row.location}</td>
+                              <td className="py-3.5 px-4">{row.vesselType}</td>
+                              <td className="py-3.5 px-4 font-mono tabular-nums">{row.startDate}</td>
+                              <td className="py-3.5 px-4 font-mono tabular-nums">{row.endDate}</td>
+                              <td className="py-3.5 px-4 font-mono font-bold text-right text-cyan-600 dark:text-cyan-400 print:text-black tabular-nums">{row.description}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="bg-slate-50 dark:bg-slate-800/30 font-bold text-slate-900 dark:text-slate-50 border-t-2 border-slate-200 dark:border-slate-800 print:border-gray-300 print:bg-transparent print:text-black">
+                            <td colSpan={7} className="py-3 px-4 text-right text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 print:text-gray-600">Total Hitch Duration:</td>
+                            <td className="py-3 px-4 font-mono text-right text-base text-emerald-600 dark:text-emerald-400 print:text-black">
+                              {tripBreakdown.rows.reduce((acc, r) => acc + r.rawDays, 0)} Days
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+
           {/* ─────────────── REFERENCE TAB ─────────────── */}
           <TabsContent value="reference" className="m-0 animate-in fade-in duration-400">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -1868,7 +2198,6 @@ export default function CalculatorPage() {
                     </div>
                   </div>
 
-                  {/* Formal Printable Document Area */}
                   <div className="bg-slate-50 dark:bg-slate-800/50 p-8 rounded-xl print:p-0 print:bg-transparent border border-slate-100 dark:border-slate-700/50 print:border-none">
                      <h1 className="text-2xl font-bold text-center mb-6 uppercase tracking-widest border-b-2 border-slate-200 dark:border-slate-700 pb-4 print:border-slate-300 text-slate-900 dark:text-slate-50 print:text-black">Seafarer Feedback Form</h1>
 
@@ -2005,7 +2334,7 @@ function AssumptionsAccordion({ maritime = false, fiscalRates }: AssumptionsAcco
         )}
         <div className="space-y-1">
           <strong className="text-slate-900 dark:text-slate-50 block">Payment Days & Payroll</strong>
-          <p>Monthly payday lands on the 28th, moving backward to the previous working day if falling on a weekend/bank holiday. Subsistence days per period automatically match the payable days, but can be manually overridden in the summary breakdown (e.g., deducting 1 day for unpaid travel).</p>
+          <p>Monthly payday lands on the 28th, moving backward to the previous working day if falling on a weekend/bank holiday. Subsistence days per period automatically match the payable days, but can be manually overridden in the summary breakdown.</p>
         </div>
       </div>
     </details>
