@@ -8,7 +8,7 @@ import {
   RotateCcw, Briefcase, FileText, UtensilsCrossed, 
   CalendarDays, Globe, RefreshCw, AlertCircle, Copy, Download, Printer, 
   ChevronDown, Check, Info, Ship, Anchor, Save, Users, FileCheck, Sun, Moon, Trash2,
-  CalendarRange
+  CalendarRange, MessageSquare
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Logo from './Logo';
@@ -87,6 +87,8 @@ export interface TripBreakdownRow {
   periodLabel: string;
   paydayDaysDesc: string;
   rawDays: number;
+  isTravel: boolean;
+  rateNote: string;
 }
 
 const CURRENCIES: CurrencyCode[] = ['EUR', 'USD', 'GBP', 'CHF', 'AUD', 'CAD'];
@@ -157,7 +159,7 @@ const formatShortMonthYear = (d: Date): string => {
 };
 
 const parseDate = (s: string): Date => {
-  if (!s || !s.includes('-')) return new Date();
+  if (!s || typeof s !== 'string' || !s.includes('-')) return new Date();
   const [y, m, d] = s.split('-').map(Number);
   return new Date(y, m - 1, d, 12, 0, 0, 0); 
 };
@@ -354,7 +356,6 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
       carryDays = params.pdPayrollType === 'monthly' && days > 31 ? days - 31 : 0;
       if (carryDays > 0) days = 31;
 
-      // Period label formatting:
       let periodLabel = '';
       if (params.pdPayrollType === 'fortnightly') {
         const fnNum = Math.floor(Math.round((payday.getTime() - FN_ANCHOR.getTime()) / (14 * 86400000))) * 2 + 2;
@@ -394,7 +395,8 @@ function generateTripBreakdown(
   marginStr: string,
   feeType: 'percentage' | 'fixed',
   currency: CurrencyCode,
-  paydaySplits: any[]
+  paydaySplits: any[],
+  contractData: any
 ): { rows: TripBreakdownRow[]; error: string | null } {
   if (!startDateStr || !endDateStr) return { rows: [], error: null };
   const overallStart = parseDate(startDateStr);
@@ -422,10 +424,24 @@ function generateTripBreakdown(
 
   const formatDayDesc = (val: number, isTravel = true): string => {
     const formatted = val % 1 === 0 ? val.toString() : val.toFixed(1);
-    return isTravel ? `${formatted} Day${val !== 1 ? 's' : ''} (Travel)` : `${formatted} Day${val !== 1 ? 's' : ''}`;
+    return isTravel ? `${formatted} Day Travel` : `${formatted} Days`;
   };
 
-  // 1. Initial Travel Day (if active)
+  const buildNote = (isTravel: boolean): string => {
+    const cRate = isTravel ? contractData.cTravelRate : contractData.cRate;
+    const cContrib = isTravel 
+      ? (contractData.cTravelPension + contractData.cTravelAppyLevy + contractData.cTravelNI) 
+      : (contractData.cPension + contractData.cAppyLevy + contractData.cEmployerNI);
+    const cSub = isTravel ? contractData.cSubTravelAmt : contractData.cSubOnboardAmt;
+    const cTravelAllow = 0;
+    const cOther = isTravel ? contractData.cTravelContingency : contractData.cContingency;
+    const cFee = isTravel ? contractData.cTravelManagementFee : contractData.cManagementFee;
+    const marginLabel = contractData.feeType === 'percentage' ? `${contractData.cMarginVal}%` : 'Fixed';
+
+    return `Charge Rate:\n\n${formatCurrencyIn(cRate, currency)} Consolidated Rate\n${formatCurrencyIn(cContrib, currency)} Employers NIC\n${formatCurrencyIn(cSub, currency)} Subsistence\n${formatCurrencyIn(cTravelAllow, currency)} Travel Allowance\n${formatCurrencyIn(cOther, currency)} Other\n${formatCurrencyIn(cFee, currency)} Management Fee (${marginLabel})`;
+  };
+
+  // 1. Initial Travel Day
   let currentStart = new Date(overallStart);
   if (startMode !== 'none') {
     const sVal = getDayValue(startMode, startCustomVal);
@@ -438,7 +454,9 @@ function generateTripBreakdown(
       chargeRateFormatted,
       periodLabel: '',
       paydayDaysDesc: '',
-      rawDays: sVal
+      rawDays: sVal,
+      isTravel: true,
+      rateNote: buildNote(true)
     });
     currentStart = addDays(currentStart, 1);
   }
@@ -453,14 +471,12 @@ function generateTripBreakdown(
     }
   }
 
-  // 3. Split Hitch Periods
-  const workingRows: TripBreakdownRow[] = [];
+  // 3. Split Working Hitch Periods
   if (currentStart.getTime() <= workingEnd.getTime()) {
     let curr = new Date(currentStart);
     let loopGuard = 0;
 
     if (payrollType === 'monthly') {
-      // Monthly calendar split
       while (curr.getTime() <= workingEnd.getTime() && loopGuard < 36) {
         loopGuard++;
         const year = curr.getFullYear();
@@ -469,74 +485,64 @@ function generateTripBreakdown(
         const chunkEnd = workingEnd.getTime() < lastDayOfMonth.getTime() ? new Date(workingEnd) : lastDayOfMonth;
 
         const diffDays = Math.round((chunkEnd.getTime() - curr.getTime()) / 86400000) + 1;
-        workingRows.push({
+        rows.push({
           payRateFormatted,
           client, rank, vessel, flagState, vesselType,
           startDate: formatShortUK(curr),
           endDate: formatShortUK(chunkEnd),
-          description: `${diffDays} Day${diffDays > 1 ? 's' : ''}`,
+          description: `${diffDays} Days`,
           chargeRateFormatted,
           periodLabel: formatShortMonthYear(curr),
           paydayDaysDesc: '',
-          rawDays: diffDays
+          rawDays: diffDays,
+          isTravel: false,
+          rateNote: buildNote(false)
         });
 
         curr = addDays(chunkEnd, 1);
       }
     } else {
-      // Fortnightly hitch split aligned with 14-day payroll schedule
       if (paydaySplits && paydaySplits.length > 0) {
         paydaySplits.forEach((sp) => {
           const spStart = new Date(Math.max(sp.periodStart.getTime(), currentStart.getTime()));
           const spEnd = new Date(Math.min(sp.periodEnd.getTime(), workingEnd.getTime()));
           if (spStart.getTime() <= spEnd.getTime()) {
             const diffDays = Math.round((spEnd.getTime() - spStart.getTime()) / 86400000) + 1;
-            workingRows.push({
+            rows.push({
               payRateFormatted,
               client, rank, vessel, flagState, vesselType,
               startDate: formatShortUK(spStart),
               endDate: formatShortUK(spEnd),
-              description: `${diffDays} Day${diffDays > 1 ? 's' : ''}`,
+              description: `${diffDays} Days`,
               chargeRateFormatted,
               periodLabel: sp.periodLabel || '',
               paydayDaysDesc: '',
-              rawDays: diffDays
+              rawDays: diffDays,
+              isTravel: false,
+              rateNote: buildNote(false)
             });
           }
         });
       } else {
-        // Fallback single block if splits not yet populated
         const diffDays = Math.round((workingEnd.getTime() - currentStart.getTime()) / 86400000) + 1;
-        workingRows.push({
+        rows.push({
           payRateFormatted,
           client, rank, vessel, flagState, vesselType,
           startDate: formatShortUK(currentStart),
           endDate: formatShortUK(workingEnd),
-          description: `${diffDays} Day${diffDays > 1 ? 's' : ''}`,
+          description: `${diffDays} Days`,
           chargeRateFormatted,
           periodLabel: '',
           paydayDaysDesc: '',
-          rawDays: diffDays
+          rawDays: diffDays,
+          isTravel: false,
+          rateNote: buildNote(false)
         });
       }
     }
   }
 
-  // Populate side-by-side Paydays info
-  workingRows.forEach((r, idx) => {
-    if (paydaySplits && paydaySplits[idx]) {
-      const pDays = paydaySplits[idx].days;
-      r.paydayDaysDesc = pDays > 0 ? `${pDays % 1 === 0 ? pDays.toString() : pDays.toFixed(1)} Days` : 'TBC';
-      if (!r.periodLabel) {
-        r.periodLabel = payrollType === 'fortnightly' 
-          ? (paydaySplits[idx].periodLabel || '') 
-          : formatShortMonthYear(paydaySplits[idx].periodStart);
-      }
-    }
-    rows.push(r);
-  });
-
-  // 4. Final Travel Day (if active)
+  // 4. Final Travel Day
   if (endMode !== 'none' && travelEndDate) {
     const eVal = getDayValue(endMode, endCustomVal);
     rows.push({
@@ -548,7 +554,22 @@ function generateTripBreakdown(
       chargeRateFormatted,
       periodLabel: '',
       paydayDaysDesc: '',
-      rawDays: eVal
+      rawDays: eVal,
+      isTravel: true,
+      rateNote: buildNote(true)
+    });
+  }
+
+  // 5. Shift Paydays column up by one row starting from row index 0
+  if (paydaySplits && paydaySplits.length > 0) {
+    paydaySplits.forEach((sp, pIdx) => {
+      if (rows[pIdx]) {
+        const pDays = sp.days;
+        rows[pIdx].paydayDaysDesc = pDays > 0 ? `${pDays % 1 === 0 ? pDays.toString() : pDays.toFixed(1)} Days` : 'TBC';
+        rows[pIdx].periodLabel = payrollType === 'fortnightly' 
+          ? (sp.periodLabel || '') 
+          : formatShortMonthYear(sp.periodStart);
+      }
     });
   }
 
@@ -644,6 +665,7 @@ interface AppState {
   tbDayRate: string;
   tbMargin: string;
   tbExcludeHeadersOnCopy: boolean;
+  tbShowContractBreakdown: boolean;
 
   savedPresets: Record<string, Partial<AppState>>;
   updateField: <K extends keyof AppState>(field: K, value: AppState[K]) => void;
@@ -654,7 +676,9 @@ interface AppState {
 const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPresets' | 'deletePreset'> = {
   theme: 'light', taxYear: '2025/2026', clientName: '', candidateName: '', cCurrency: 'GBP', cFxDate: new Date().toISOString().slice(0, 10),
   consolidatedRate: '', feeType: 'percentage', margin: '15', crewSize: '1', includePension: false, includeAppyLevy: false,
-  includeContingency: false, contingencyType: 'percentage', contingencyValue: '', includeNI: true, niMode: 'base',
+  includeContingency: false, contingencyType: 'percentage', contingencyValue: '', 
+  includeNI: false, // Default is not automatically enabled
+  niMode: 'base',
   seafarerExempt: false, includeSubsistence: false, subsistenceTravel: '50', subsistenceTravelDays: '1', subsistenceOnboard: '0', subsistenceInFee: true,
   includeTrip: false, workingDays: '28', travelDays: '2', travelDayFull: false, travelFeeType: 'percentage', travelFee: '15',
   mobTravel: '', mobVisas: '', mobAgent: '', logisticsInFee: false, salary: '', placementFee: '', includePermNI: false,
@@ -678,7 +702,8 @@ const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPre
   tbEndCustomVal: '0.5',
   tbDayRate: '',
   tbMargin: '15',
-  tbExcludeHeadersOnCopy: false
+  tbExcludeHeadersOnCopy: false,
+  tbShowContractBreakdown: true
 };
 
 const useStore = create<AppState>()(
@@ -691,30 +716,28 @@ const useStore = create<AppState>()(
           if (state[field] === value) return state;
           const updates: Partial<AppState> = { [field]: value };
 
-          // Bi-directional Date Sync
-          if (field === 'tbStartDate' && state.pdStartDate !== value) {
+          if (field === 'tbStartDate') {
             updates.pdStartDate = value as string;
-          } else if (field === 'pdStartDate' && state.tbStartDate !== value) {
+          } else if (field === 'pdStartDate') {
             updates.tbStartDate = value as string;
           }
 
-          if (field === 'tbEndDate' && state.pdFinishDate !== value) {
+          if (field === 'tbEndDate') {
             updates.pdFinishDate = value as string;
-          } else if (field === 'pdFinishDate' && state.tbEndDate !== value) {
+          } else if (field === 'pdFinishDate') {
             updates.tbEndDate = value as string;
           }
 
-          // Bi-directional Pay Rate & Margin Sync
           if (field === 'tbDayRate') {
-            if (state.pdDayRate !== value) updates.pdDayRate = value as string;
-            if (state.consolidatedRate !== value) updates.consolidatedRate = value as string;
-          } else if ((field === 'pdDayRate' || field === 'consolidatedRate') && state.tbDayRate !== value) {
+            updates.pdDayRate = value as string;
+            updates.consolidatedRate = value as string;
+          } else if (field === 'pdDayRate' || field === 'consolidatedRate') {
             updates.tbDayRate = value as string;
           }
 
-          if (field === 'tbMargin' && state.margin !== value) {
+          if (field === 'tbMargin') {
             updates.margin = value as string;
-          } else if (field === 'margin' && state.tbMargin !== value) {
+          } else if (field === 'margin') {
             updates.tbMargin = value as string;
           }
 
@@ -729,7 +752,7 @@ const useStore = create<AppState>()(
       })
     }),
     { 
-      name: 'maritime-hq-v15', 
+      name: 'maritime-hq-v26', 
       merge: (persistedState: any, currentState) => {
         return { ...currentState, ...persistedState, savedPresets: persistedState?.savedPresets || {} };
       }
@@ -969,24 +992,14 @@ const Tooltip = ({ text }: TooltipProps) => (
 export default function CalculatorPage() {
   const s = useStore();
 
-  useEffect(() => {
-    if (!s || !s.updateField || !s.taxYear || !FISCAL_PROFILES[s.taxYear]) {
-      console.error("Corrupted state detected. Resetting to defaults.");
-      localStorage.removeItem('maritime-hq-v15');
-      window.location.reload();
-    }
-  }, [s]);
-
-  if (!s || !s.updateField || !s.taxYear || !FISCAL_PROFILES[s.taxYear]) return null;
-
   const { showToast, showUndoToast, ToastContainer } = useToast();
   const bankHolidays = useBankHolidays();
-  const [mode, setMode] = useState<'contract' | 'perm' | 'trip' | 'paydays' | 'reference'>('contract');
+  const [mode, setMode] = useState<'trip' | 'paydays' | 'contract' | 'perm' | 'reference'>('trip');
   const [newPresetName, setNewPresetName] = useState('');
   const [selectedPreset, setSelectedPreset] = useState('');
   const [subDaysOverrides, setSubDaysOverrides] = useState<Record<number, string>>({});
 
-  const activeFiscalRates = FISCAL_PROFILES[s.taxYear];
+  const activeFiscalRates = FISCAL_PROFILES[s.taxYear] || FISCAL_PROFILES['2025/2026'];
   const cFx = useFxRate(s.cCurrency, s.cFxDate);
   const pFx = useFxRate(s.pCurrency, s.pFxDate);
 
@@ -1098,11 +1111,11 @@ export default function CalculatorPage() {
       s.tbStartDate,
       s.tbEndDate,
       s.pdPayrollType,
-      s.tbClient || '-',
-      s.tbRank || '-',
-      s.tbVessel || '-',
-      s.tbFlagState || '-',
-      s.tbVesselType || '-',
+      s.tbClient || '',
+      s.tbRank || '',
+      s.tbVessel || '',
+      s.tbFlagState || '',
+      s.tbVesselType || '',
       s.tbStartMode,
       s.tbStartCustomVal,
       s.tbEndMode,
@@ -1111,9 +1124,10 @@ export default function CalculatorPage() {
       s.tbMargin,
       s.feeType,
       s.cCurrency,
-      paydays.splits
+      paydays.splits,
+      contract
     );
-  }, [s.tbStartDate, s.tbEndDate, s.pdPayrollType, s.tbClient, s.tbRank, s.tbVessel, s.tbFlagState, s.tbVesselType, s.tbStartMode, s.tbStartCustomVal, s.tbEndMode, s.tbEndCustomVal, s.tbDayRate, s.tbMargin, s.feeType, s.cCurrency, paydays.splits]);
+  }, [s.tbStartDate, s.tbEndDate, s.pdPayrollType, s.tbClient, s.tbRank, s.tbVessel, s.tbFlagState, s.tbVesselType, s.tbStartMode, s.tbStartCustomVal, s.tbEndMode, s.tbEndCustomVal, s.tbDayRate, s.tbMargin, s.feeType, s.cCurrency, paydays.splits, contract]);
 
   // ─── Export Functions ───
   const downloadCSV = (filename: string, headers: string, rows: string) => {
@@ -1149,27 +1163,39 @@ export default function CalculatorPage() {
     downloadCSV('perm_breakdown.csv', headers, rows);
   };
 
+  // CSV Export strictly mapped to Excel columns: B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R
   const exportTripBreakdownCSV = () => {
     if (!tripBreakdown.rows.length) return;
     const headers = s.tbExcludeHeadersOnCopy 
       ? "" 
-      : "Pay Rate,Client,Rank,Vessel,Flag State,Vessel Type,Start Date,End Date,Days,Charge Rate,Period,Payday Days\n";
+      : "Col A,Pay Rate (B),Client (C),Rank (D),Vessel Name (E),Flag State (F),Vessel Type (G),Start Date (H),End Date (I),Days (J),Col K,Col L,Col M,Charge Rate (N),Col O,Col P,Period (Q),Paydays (R)\n";
     const rows = tripBreakdown.rows.map(r => 
-      `"${r.payRateFormatted}","${r.client}","${r.rank}","${r.vessel}","${r.flagState}","${r.vesselType}","${r.startDate}","${r.endDate}","${r.description}","${r.chargeRateFormatted}","${r.periodLabel}","${r.paydayDaysDesc}"`
+      `"","${r.payRateFormatted}","${r.client}","${r.rank}","${r.vessel}","${r.flagState}","${r.vesselType}","${r.startDate}","${r.endDate}","${r.description}","","","","${r.chargeRateFormatted}","","","${r.periodLabel}","${r.paydayDaysDesc}"`
     ).join("\n");
     downloadCSV(`trip_breakdown_${s.tbStartDate || 'start'}_to_${s.tbEndDate || 'end'}.csv`, headers, rows);
   };
 
+  // Pure TSV Clipboard Export: Column A = empty, B = Pay, C = Client, D = Rank, E = Vessel, F = Flag, G = Type, H = Start, I = End, J = Days, K = empty, L = empty, M = empty, N = Charge Rate, O = empty, P = empty, Q = Period, R = Paydays
   const copyTripBreakdownSummary = () => {
     if (!tripBreakdown.rows.length) return;
-    let tsv = s.tbExcludeHeadersOnCopy 
-      ? "" 
-      : "Pay Rate\tClient\tRank\tVessel\tFlag State\tType\tStart\tEnd\tDays\tCharge Rate\tPeriod\tPayday Days\n";
+
+    let tsv = "";
+    if (!s.tbExcludeHeadersOnCopy) {
+      tsv += "\tPay Rate\tClient\tRank\tVessel Name\tFlag State\tVessel Type\tStart Date\tEnd Date\tDays\t\t\t\tCharge Rate\t\t\tPeriod\tPaydays\n";
+    }
 
     tripBreakdown.rows.forEach(r => {
-      tsv += `${r.payRateFormatted}\t${r.client}\t${r.rank}\t${r.vessel}\t${r.flagState}\t${r.vesselType}\t${r.startDate}\t${r.endDate}\t${r.description}\t\t${r.chargeRateFormatted}\t\t${r.periodLabel}\t${r.paydayDaysDesc}\n`;
+      tsv += `\t${r.payRateFormatted}\t${r.client}\t${r.rank}\t${r.vessel}\t${r.flagState}\t${r.vesselType}\t${r.startDate}\t${r.endDate}\t${r.description}\t\t\t\t${r.chargeRateFormatted}\t\t\t${r.periodLabel}\t${r.paydayDaysDesc}\n`;
     });
-    copyText(tsv.trim()).then(ok => showToast(ok ? `Trip breakdown copied ${s.tbExcludeHeadersOnCopy ? '(without headers)' : '(with headers)'}` : 'Clipboard access denied.'));
+
+    copyText(tsv.trimEnd()).then(ok => showToast(ok ? `Trip breakdown copied ${s.tbExcludeHeadersOnCopy ? '(without headers)' : '(with headers)'}` : 'Clipboard access denied.'));
+  };
+
+  const copyWorkingDayChargeNote = () => {
+    if (!tripBreakdown.rows.length) return;
+    const workingRow = tripBreakdown.rows.find(r => !r.isTravel) || tripBreakdown.rows[0];
+    if (!workingRow) return;
+    copyText(workingRow.rateNote).then(ok => showToast(ok ? 'Charge Rate note copied! (Right-Click in Excel -> New Note -> Ctrl+V)' : 'Clipboard access denied.'));
   };
 
   const exportReferenceCSV = () => {
@@ -1342,20 +1368,19 @@ export default function CalculatorPage() {
     { name: 'Management Fee', value: contract.cManagementFee, color: '#cbd5e1' }
   ].filter(d => d.value > 0);
 
-  // ─── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-[100dvh] bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-50 py-10 px-4 sm:px-6 md:px-8 flex flex-col items-center pb-28 md:pb-10 transition-colors duration-300 font-sans antialiased tracking-tight print:py-0 print:px-0">
       <ToastContainer />
-      <div className="w-full max-w-5xl">
+      <div className="w-full max-w-7xl">
         {/* ── Print-only document header ── */}
         <div className="hidden print:flex print:items-start print:justify-between print:mb-8 print:pb-6 print:border-b-2 print:border-gray-300">
           <div>
             <img src="/Seamariner_Primary_Logo_Full_Color_Rgb_900px_w_72ppi - No Background.png" alt="Seamariner" className="h-10 w-auto mb-2" />
             <p className="text-sm font-bold text-gray-500 uppercase tracking-widest">
-              {mode === 'contract' && 'Contract / Day Rate Breakdown'}
-              {mode === 'perm' && 'Permanent Placement Summary'}
               {mode === 'trip' && 'Trip & Hitch Breakdown Schedule'}
               {mode === 'paydays' && 'Payroll Schedule'}
+              {mode === 'contract' && 'Contract / Day Rate Breakdown'}
+              {mode === 'perm' && 'Permanent Placement Summary'}
               {mode === 'reference' && 'Seafarer Feedback Form'}
             </p>
           </div>
@@ -1418,471 +1443,20 @@ export default function CalculatorPage() {
           </div>
         )}
 
+        {/* Tabs organized in requested order */}
         <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)} className="w-full">
           <TabsList className="grid w-full max-w-4xl grid-cols-5 mb-8 bg-black/5 dark:bg-white/5 p-1 rounded-xl print:hidden">
-            <TabsTrigger value="contract" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><Ship className="h-4 w-4" />Contract</TabsTrigger>
-            <TabsTrigger value="perm" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><Briefcase className="h-4 w-4" />Perm</TabsTrigger>
             <TabsTrigger value="trip" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><CalendarRange className="h-4 w-4" />Trip Breakdown</TabsTrigger>
             <TabsTrigger value="paydays" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><CalendarDays className="h-4 w-4" />Paydays</TabsTrigger>
+            <TabsTrigger value="contract" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><Ship className="h-4 w-4" />Contract</TabsTrigger>
+            <TabsTrigger value="perm" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><Briefcase className="h-4 w-4" />Permanent</TabsTrigger>
             <TabsTrigger value="reference" className="flex gap-2 rounded-lg data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700 data-[state=active]:text-slate-900 dark:data-[state=active]:text-slate-50 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-black/5 dark:data-[state=active]:ring-white/10 text-slate-500 dark:text-slate-400 font-semibold transition-all"><FileCheck className="h-4 w-4" />Reference</TabsTrigger>
           </TabsList>
 
-          {/* ─────────────── CONTRACT TAB ─────────────── */}
-          <TabsContent value="contract" className="m-0 animate-in fade-in duration-400">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              <div className="lg:col-span-5 flex flex-col gap-6 print:hidden">
-                <CollapsibleCard title="Day Rate & Tax" icon={FileText} defaultOpen>
-                  <div className="space-y-4 mb-4">
-                    <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Currency & Crew</label>
-                    <div className="flex gap-2">
-                      <SegmentedControl value={s.cCurrency} onChange={(v: string) => s.updateField('cCurrency', v as CurrencyCode)} options={CURRENCIES.map(c => ({label: c, value: c}))} ariaLabel="Currency" />
-                    </div>
-                    <AnimatedSection show={s.cCurrency !== 'GBP'}>
-                      <div className="space-y-3 p-4 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-xl mb-6">
-                        <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-slate-50">
-                          <Globe className="h-4 w-4" />Exchange Rate
-                        </div>
-                        <div className="space-y-1">
-                          <label htmlFor="c-fx-date" className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Placement / Start Date</label>
-                          <input id="c-fx-date" type="date" value={s.cFxDate} onChange={(e) => s.updateField('cFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 transition-all text-sm font-medium" />
-                        </div>
-                        <div className="flex items-center justify-between rounded-lg bg-white/50 dark:bg-black/20 border border-slate-200 dark:border-slate-800 px-3 py-2.5">
-                          {cFx.isManual ? (
-                            <div className="flex items-center gap-2 w-full">
-                              <span className="text-sm font-bold text-slate-900 dark:text-slate-50 whitespace-nowrap">1 {s.cCurrency} = </span>
-                              <input type="number" value={cFx.manualRate} onChange={(e) => cFx.setManualRate(e.target.value)} placeholder="0.0000" className="w-full px-2 py-1 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20" />
-                              <span className="text-sm font-bold text-slate-900 dark:text-slate-50">GBP</span>
-                            </div>
-                          ) : (
-                             <div className="text-sm font-medium">
-                               {cFx.loading ? (
-                                 <span className="text-slate-500 dark:text-slate-400">Fetching rate…</span>
-                               ) : cFx.rate !== null ? (
-                                 <span className="font-mono font-bold animate-in fade-in duration-300 text-slate-900 dark:text-slate-50">1 {s.cCurrency} = {cFx.rate.toFixed(4)} GBP</span>
-                               ) : (
-                                 <span className="text-slate-500 dark:text-slate-400">No rate yet</span>
-                               )}
-                             </div>
-                          )}
-                          {!cFx.isManual && (
-                             <button onClick={cFx.refresh} aria-label="Refresh exchange rate" className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white">
-                               <RefreshCw className={cn('h-3.5 w-3.5', cFx.loading && 'animate-spin')} />
-                             </button>
-                          )}
-                        </div>
-                        <div className="flex items-center justify-between pt-1 px-1">
-                          <label className="text-xs font-bold cursor-pointer text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 transition-colors" onClick={() => cFx.setIsManual(!cFx.isManual)}>Manual Override</label>
-                          <Switch checked={cFx.isManual} onCheckedChange={(v: boolean) => cFx.setIsManual(v)} className="scale-75 origin-right" />
-                        </div>
-                        {cFx.error === 'future-date-fallback' && !cFx.isManual && (
-                          <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-500 font-medium mt-2">
-                            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                            <span>Future date selected. Showing today's latest rate instead.</span>
-                          </div>
-                        )}
-                      </div>
-                    </AnimatedSection>
-                    <div className="flex items-center justify-between gap-4 p-3 bg-black/5 dark:bg-white/5 rounded-xl border border-black/10 dark:border-white/10">
-                      <label className="text-sm font-bold flex items-center gap-2 text-slate-900 dark:text-slate-50"><Users className="h-4 w-4"/> Crew Size (Multiplier)</label>
-                      <input type="number" min="1" value={s.crewSize} onChange={(e) => s.updateField('crewSize', e.target.value)} className="w-20 px-3 py-1.5 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 rounded-lg font-mono text-center focus:ring-2 focus:ring-slate-900 dark:focus:ring-white outline-none" />
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Consolidated Rate — Seafarer Pay</label>
-                    <NumInput value={s.consolidatedRate} onChange={(v: string) => s.updateField('consolidatedRate', v)} prefix={curSym(s.cCurrency)} />
-                  </div>
-
-                  <div className="space-y-3 pt-2">
-                    <div className="flex justify-between group">
-                      <div className="space-y-1 pr-4">
-                        <label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('includePension', !s.includePension)}>Include Pension</label>
-                        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Standard {activeFiscalRates.pension * 100}% addition</p>
-                      </div>
-                      <Switch checked={s.includePension} onCheckedChange={(v: boolean) => s.updateField('includePension', v)} />
-                    </div>
-                    <div className="flex justify-between group">
-                      <div className="space-y-1 pr-4">
-                        <label className="text-sm font-bold flex items-center cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('includeAppyLevy', !s.includeAppyLevy)}>Include Apprenticeship Levy <Tooltip text="A 0.5% tax on large employers to fund apprenticeship training." /></label>
-                        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Standard {activeFiscalRates.apprenticeshipLevy * 100}% addition</p>
-                      </div>
-                      <Switch checked={s.includeAppyLevy} onCheckedChange={(v: boolean) => s.updateField('includeAppyLevy', v)} />
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('includeContingency', !s.includeContingency)}>Add Contingency</label><Switch checked={s.includeContingency} onCheckedChange={(v: boolean) => s.updateField('includeContingency', v)} /></div>
-                      <AnimatedSection show={s.includeContingency}>
-                        <div className="flex items-center gap-2 pt-1">
-                           <div className="w-24"><SegmentedControl value={s.contingencyType} onChange={(v: string) => s.updateField('contingencyType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Contingency Type" /></div>
-                           <NumInput value={s.contingencyValue} onChange={(v: string) => s.updateField('contingencyValue', v)} prefix={s.contingencyType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.contingencyType === 'percentage' ? '%' : undefined} />
-                        </div>
-                      </AnimatedSection>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2 pt-4 border-t border-slate-100 dark:border-slate-800 mt-4">
-                    <div className="flex items-center justify-between">
-                      <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Management Fee</label>
-                      <div className="w-32"><SegmentedControl value={s.feeType} onChange={(v: string) => s.updateField('feeType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Fee Type" /></div>
-                    </div>
-                    <NumInput value={s.margin} onChange={(v: string) => s.updateField('margin', v)} prefix={s.feeType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.feeType === 'percentage' ? '%' : undefined} />
-                  </div>
-
-                  <div className="pt-4 space-y-4 border-t border-slate-100 dark:border-slate-800 mt-4">
-                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('includeNI', !s.includeNI)}>Include Employer's NI</label><Switch checked={s.includeNI} onCheckedChange={(v: boolean) => s.updateField('includeNI', v)} /></div>
-                    <AnimatedSection show={s.includeNI}>
-                      <div className="space-y-3 bg-amber-500/5 dark:bg-cyan-500/5 p-4 rounded-xl border border-amber-500/20 dark:border-cyan-500/20">
-                        <SegmentedControl value={s.niMode} onChange={(v: string) => s.updateField('niMode', v as 'base' | 'total')} options={[{label: 'Base Rate', value: 'base'}, {label: 'Total Amount', value: 'total'}]} ariaLabel="NI Mode" />
-                        <div className="flex justify-between items-center pt-2"><label className="text-sm font-bold text-amber-700 dark:text-cyan-400">Seafarer Exemption <Tooltip text="UK Continental Shelf. Vessels operating wholly outside this may be exempt from Employer's NI." /></label><Switch checked={s.seafarerExempt} onCheckedChange={(v: boolean) => s.updateField('seafarerExempt', v)} /></div>
-                      </div>
-                    </AnimatedSection>
-                  </div>
-                </CollapsibleCard>
-
-                <CollapsibleCard title="Subsistence & Victualling" icon={UtensilsCrossed} defaultOpen={false}>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-sm font-bold cursor-pointer flex items-center text-slate-900 dark:text-slate-50" onClick={() => s.updateField('includeSubsistence', !s.includeSubsistence)}>
-                      Enable Subsistence
-                      <Tooltip text="Food and provisions provided onboard. Typically £0 as covered by the vessel." />
-                    </label>
-                    <Switch checked={s.includeSubsistence} onCheckedChange={(v: boolean) => { s.updateField('includeSubsistence', v); if (!v) s.updateField('subsistenceInFee', false); }} />
-                  </div>
-                  <AnimatedSection show={s.includeSubsistence} className="pt-3 space-y-5 border-t border-slate-100 dark:border-slate-800 mt-3">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel (per day)</label><NumInput value={s.subsistenceTravel} onChange={(v: string) => s.updateField('subsistenceTravel', v)} prefix={curSym(s.cCurrency)} /></div>
-                      {!s.includeTrip && <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel Days</label><NumInput value={s.subsistenceTravelDays} onChange={(v: string) => s.updateField('subsistenceTravelDays', v)} placeholder="1" /></div>}
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Onboard (per day)</label><NumInput value={s.subsistenceOnboard} onChange={(v: string) => s.updateField('subsistenceOnboard', v)} prefix={curSym(s.cCurrency)} /></div>
-                    </div>
-                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.includeSubsistence && s.updateField('subsistenceInFee', !s.subsistenceInFee)}>Apply margin to subsistence</label><Switch checked={s.subsistenceInFee} onCheckedChange={(v: boolean) => s.updateField('subsistenceInFee', v)} disabled={!s.includeSubsistence} /></div>
-                  </AnimatedSection>
-                </CollapsibleCard>
-
-                <CollapsibleCard title="Hitch & Logistics Scheduler" icon={Anchor} defaultOpen={false}>
-                   <div className="flex justify-between"><label className="text-sm font-bold text-slate-900 dark:text-slate-50">Enable Hitch Scheduler</label><Switch checked={s.includeTrip} onCheckedChange={(v: boolean) => s.updateField('includeTrip', v)} /></div>
-                   <AnimatedSection show={s.includeTrip} className="pt-4 space-y-4 border-t border-slate-100 dark:border-slate-800 mt-3">
-                     <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Days Onboard</label><NumInput value={s.workingDays} onChange={(v: string) => s.updateField('workingDays', v)} placeholder="Working Days" /></div>
-                     <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-100 dark:border-slate-800">
-                       <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel Days</label><NumInput value={s.travelDays} onChange={(v: string) => s.updateField('travelDays', v)} placeholder="Travel Days" /></div>
-                       <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Charge Rate</label><SegmentedControl value={s.travelDayFull ? 'full' : 'half'} onChange={(v: string) => s.updateField('travelDayFull', v === 'full')} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full rate', value: 'full'}]} ariaLabel="Travel Rate" /></div>
-                     </div>
-                     <div className="space-y-3 pt-4 border-t border-slate-100 dark:border-slate-800">
-                       <div className="flex items-center justify-between"><label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Travel & Logistics Costs</label><div className="flex items-center gap-2"><label className="text-xs font-bold text-slate-500 dark:text-slate-400 cursor-pointer" onClick={() => s.updateField('logisticsInFee', !s.logisticsInFee)}>Add Travel Fee</label><Switch checked={s.logisticsInFee} onCheckedChange={(v: boolean) => s.updateField('logisticsInFee', v)} className="scale-75 origin-right" /></div></div>
-                       <div className="grid grid-cols-3 gap-2">
-                         <NumInput value={s.mobTravel} onChange={(v: string) => s.updateField('mobTravel', v)} placeholder="Travel" prefix={curSym(s.cCurrency)} />
-                         <NumInput value={s.mobVisas} onChange={(v: string) => s.updateField('mobVisas', v)} placeholder="Visas" prefix={curSym(s.cCurrency)} />
-                         <NumInput value={s.mobAgent} onChange={(v: string) => s.updateField('mobAgent', v)} placeholder="Agent" prefix={curSym(s.cCurrency)} />
-                       </div>
-                       <AnimatedSection show={s.logisticsInFee} className="space-y-2 pt-3">
-                         <div className="flex items-center justify-between">
-                           <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel Fee</label>
-                           <div className="w-28"><SegmentedControl value={s.travelFeeType} onChange={(v: string) => s.updateField('travelFeeType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Travel Fee Type" /></div>
-                         </div>
-                         <NumInput value={s.travelFee} onChange={(v: string) => s.updateField('travelFee', v)} prefix={s.travelFeeType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.travelFeeType === 'percentage' ? '%' : undefined} />
-                       </AnimatedSection>
-                     </div>
-                   </AnimatedSection>
-                </CollapsibleCard>
-              </div>
-
-              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
-                {contract.cRate === 0 && !dbConsolidatedRate ? (
-                  <div className="absolute inset-0 z-10 bg-white/95 dark:bg-slate-900/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
-                    <div className="p-4 bg-black/5 dark:bg-white/10 rounded-full mb-4">
-                      <Ship className="h-8 w-8 text-slate-900 dark:text-cyan-400" />
-                    </div>
-                    <h3 className="text-xl font-bold mb-2 text-slate-900 dark:text-slate-50">Awaiting Parameters</h3>
-                    <p className="text-slate-500 dark:text-slate-400 font-medium max-w-sm">
-                      Enter a consolidated day rate and management fee to generate the maritime charge breakdown.
-                    </p>
-                  </div>
-                ) : null}
-
-                <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
-                  <div className="flex items-center justify-between gap-4 mb-8">
-                    <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">{s.crewSize !== '1' ? `Crew Charge Breakdown (${s.crewSize} Members)` : 'Charge Rate Breakdown'}</h2>
-                    <div className="flex items-center gap-2">
-                      <ActionButton onClick={copyContractBreakdown} icon={Copy} label="Copy" />
-                      <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
-                      <ActionButton onClick={exportContractCSV} icon={Download} label="CSV" />
-                    </div>
-                  </div>
-
-                  <div className="h-24 w-full mb-6 print:hidden">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie data={chartData} cx="50%" cy="50%" innerRadius={30} outerRadius={45} paddingAngle={2} dataKey="value" stroke="none">
-                          {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
-                        </Pie>
-                        <ChartTooltip formatter={(value: number) => formatCurrencyIn(value, s.cCurrency)} contentStyle={{ borderRadius: '8px', border: 'none', backgroundColor: s.theme === 'dark' ? '#1E293B' : '#FFFFFF', color: s.theme === 'dark' ? '#F8FAFC' : '#0F172A', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} itemStyle={{ color: s.theme === 'dark' ? '#F8FAFC' : '#0F172A' }} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
-
-                  <div className="space-y-3">
-                    <LineItem label={`Consolidated Day Rate ${s.crewSize !== '1' ? '(Total Crew)' : ''}`} value={contract.cRate * contract.crewSize} isBold currency={s.cCurrency} />
-                    {s.includePension && <LineItem label={`Pension (${activeFiscalRates.pension * 100}%)`} value={contract.cPension * contract.crewSize} currency={s.cCurrency} />}
-                    {s.includeAppyLevy && <LineItem label={`Apprenticeship Levy (${activeFiscalRates.apprenticeshipLevy * 100}%)`} value={contract.cAppyLevy * contract.crewSize} currency={s.cCurrency} />}
-                    {s.includeContingency && <LineItem label={`Contingency (${s.contingencyType === 'percentage' && contract.cContingency > 0 ? dbContingencyValue + '%' : 'Fixed'})`} value={contract.cContingency * contract.crewSize} currency={s.cCurrency} />}
-
-                    {s.includeNI && (
-                      <LineItem label={s.seafarerExempt ? "Employers NIC (Exempt)" : `Employers NIC (${activeFiscalRates.employerNI * 100}%)`} value={contract.cEmployerNI * contract.crewSize} currency={s.cCurrency} />
-                    )}
-                    {s.includeSubsistence && contract.cSubTravelAmt > 0 && (() => { const tDays = s.includeTrip ? Math.max(1, parseFloat(dbTravelDays) || 1) : Math.max(1, parseFloat(dbSubTravelDays) || 1); return <LineItem label={`Travel Subsistence (×${tDays} day${tDays !== 1 ? 's' : ''})`} value={contract.cSubTravelAmt * contract.crewSize * tDays} currency={s.cCurrency} />; })()}
-                    {s.includeSubsistence && contract.cSubOnboardAmt > 0 && <LineItem label="Onboard Victualling/Sub" value={contract.cSubOnboardAmt * contract.crewSize} currency={s.cCurrency} />}
-                    <LineItem label={`Management Fee (${contract.feeType === 'percentage' && contract.cMarginVal > 0 ? `${contract.cMarginVal}%` : 'Fixed'})`} value={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
-
-                    {s.feeType === 'percentage' && contract.cMarginVal > 0 && contract.cMarginVal < 10 && (
-                      <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-lg px-3 py-2 text-xs font-semibold text-amber-600 dark:text-amber-400 print:hidden">
-                        <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                        Low margin — {contract.cMarginVal}% is below the 10% threshold.
-                      </div>
-                    )}
-
-                    <div className="mt-4 pt-5 border-t-2 border-black/10 dark:border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                      <div>
-                        <span className="text-lg font-bold text-slate-900 dark:text-slate-50 block">Total Charge Per Day</span>
-                        {s.cCurrency !== 'GBP' && (
-                          <div className="flex items-center gap-2 mt-1.5 print:hidden">
-                            <span className="text-xs text-slate-500 dark:text-slate-400 font-semibold">Display Currency:</span>
-                            <div className="w-36">
-                              <SegmentedControl 
-                                value={s.displayCurrency} 
-                                onChange={(v: string) => s.updateField('displayCurrency', v as 'original' | 'gbp')} 
-                                options={[{label: s.cCurrency, value: 'original'}, {label: 'GBP (£)', value: 'gbp'}]} 
-                                ariaLabel="Display Currency Toggle"
-                              />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                      <span className="text-3xl font-mono font-bold text-emerald-600 dark:text-emerald-400 animate-in zoom-in-95 duration-200">
-                        {s.displayCurrency === 'gbp' && s.cCurrency !== 'GBP' && cFx.rate !== null
-                          ? formatCurrencyIn(contract.cTotalCharge * contract.crewSize * cFx.rate, 'GBP')
-                          : formatCurrencyIn(contract.cTotalCharge * contract.crewSize, s.cCurrency)}
-                      </span>
-                    </div>
-
-                    {s.cCurrency !== 'GBP' && cFx.rate !== null && s.displayCurrency === 'original' && (
-                      <div className="flex items-center justify-between pt-2 text-sm text-slate-500 dark:text-slate-400 border-t border-black/5 dark:border-white/5">
-                         <span>Converted Equivalency (@ {cFx.rate.toFixed(4)})</span>
-                         <span className="font-mono font-bold tabular-nums text-slate-900 dark:text-slate-50">{formatCurrencyIn(contract.cTotalCharge * contract.crewSize * cFx.rate, 'GBP')}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  <AnimatedSection show={s.includeTrip} className="mt-8 pt-6 border-t border-black/10 dark:border-white/10">
-                    <h3 className="text-sm font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400 mb-4">Single Travel Day Reference {s.crewSize !== '1' ? '(Total Crew)' : ''}</h3>
-                    <div className="space-y-2.5">
-                      <LineItem label={`Consolidated Rate (×${s.travelDayFull ? '1' : '0.5'})`} value={contract.cTravelRate * contract.crewSize} currency={s.cCurrency} />
-                      {s.includePension && <LineItem label="Pension" value={contract.cTravelPension * contract.crewSize} currency={s.cCurrency} />}
-                      {s.includeAppyLevy && <LineItem label="Apprenticeship Levy" value={contract.cTravelAppyLevy * contract.crewSize} currency={s.cCurrency} />}
-                      {s.includeContingency && <LineItem label="Contingency" value={contract.cTravelContingency * contract.crewSize} currency={s.cCurrency} />}
-                      {s.includeNI && !s.seafarerExempt && <LineItem label="Employers NIC" value={contract.cTravelNI * contract.crewSize} currency={s.cCurrency} />}
-                      {s.includeSubsistence && contract.cSubTravelAmt > 0 && <LineItem label="Travel Subsistence (100%)" value={contract.cSubTravelAmt * contract.crewSize} currency={s.cCurrency} />}
-                      <LineItem label={`Management Fee`} value={contract.cTravelManagementFee * contract.crewSize} currency={s.cCurrency} />
-                      <div className="pt-3 border-t border-black/10 dark:border-white/10 flex items-center justify-between">
-                        <span className="text-sm font-bold text-slate-900 dark:text-slate-50">Travel Day Total</span>
-                        <span className="font-mono font-bold text-base text-emerald-600 dark:text-emerald-400">{formatCurrencyIn(contract.cTravelDayCharge * contract.crewSize, s.cCurrency)}</span>
-                      </div>
-                    </div>
-                  </AnimatedSection>
-                </div>
-
-                <div className="bg-slate-50 dark:bg-black/20 p-8 md:p-10 border-t border-slate-200 dark:border-slate-800 relative z-0 print:bg-transparent">
-                  {s.includeTrip ? (
-                    <div className="animate-in fade-in duration-300">
-                      <div className="flex items-center justify-between mb-6">
-                        <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">Hitch Crew-Change Invoice {s.crewSize !== '1' ? '(Full Crew)' : ''}</h3>
-                        <div className="flex gap-2">
-                           <ActionButton onClick={copyTripSummary} icon={Copy} label="Copy" />
-                           <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
-                        </div>
-                      </div>
-                      <div className="space-y-4">
-                        <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 p-4 rounded-xl space-y-2">
-                          <div className="flex items-center justify-between font-bold text-slate-900 dark:text-slate-50">
-                            <span>Days Onboard</span>
-                            <span className="font-mono">{formatCurrencyIn(contract.crewTripWorkingTotal, s.cCurrency)}</span>
-                          </div>
-                          <div className="text-xs text-slate-500 dark:text-slate-400">{contract.nWorkingDays} days × {formatCurrencyIn(contract.cTotalCharge * contract.crewSize, s.cCurrency)}</div>
-                        </div>
-
-                        <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-800 p-4 rounded-xl space-y-2">
-                          <div className="flex items-center justify-between font-bold text-slate-900 dark:text-slate-50">
-                            <span>Travel Days ({contract.nTravelDays})</span>
-                            <span className="font-mono">{formatCurrencyIn(contract.crewTripTravelTotal, s.cCurrency)}</span>
-                          </div>
-                          <div className="text-xs text-slate-500 dark:text-slate-400">{contract.travelPayableDays} days pay + {contract.travelSubDays} full days sub</div>
-                        </div>
-
-                        {contract.crewLogisticsTotal > 0 && (
-                          <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-800 p-4 rounded-xl flex flex-col gap-2">
-                            <div className="flex items-center justify-between font-bold text-slate-900 dark:text-slate-50">
-                              <span>Travel & Logistics Costs</span>
-                              <span className="font-mono">{formatCurrencyIn(contract.crewLogisticsTotal, s.cCurrency)}</span>
-                            </div>
-                            <span className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                              Travel: {curSym(s.cCurrency)}{dbMobTravel || '0'} | VISA / Cert.: {curSym(s.cCurrency)}{dbMobVisas || '0'} | Agent: {curSym(s.cCurrency)}{dbMobAgent || '0'} <br />
-                              {s.logisticsInFee && contract.logisticsFee > 0 && `${contract.travelFeeType === 'percentage' ? contract.cTravelFeeVal + '%' : 'Fixed'} Travel Fee: ${formatCurrencyIn(contract.logisticsFee * contract.crewSize, s.cCurrency)}`}
-                            </span>
-                          </div>
-                        )}
-
-                        <div className="pt-2 border-t-2 border-black/10 dark:border-white/10 flex flex-col gap-2">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <span className="text-lg font-bold text-slate-900 dark:text-slate-50 block">Total Hitch Invoice</span>
-                              <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">{contract.nWorkingDays + contract.nTravelDays} days total</span>
-                            </div>
-                            <span className="text-3xl font-mono font-bold text-emerald-600 dark:text-emerald-400 animate-in zoom-in-95 duration-200" key={contract.crewTripGrandTotal}>
-                              {s.displayCurrency === 'gbp' && s.cCurrency !== 'GBP' && cFx.rate !== null
-                                ? formatCurrencyIn(contract.crewTripGrandTotal * cFx.rate, 'GBP')
-                                : formatCurrencyIn(contract.crewTripGrandTotal, s.cCurrency)}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="animate-in fade-in duration-300 print:hidden">
-                      <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400 mb-6">Standard Revenue Projections {s.crewSize !== '1' ? `(×${s.crewSize})` : ''}</h3>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                        <ProjectionCard label="Weekly" days={5} charge={contract.cTotalCharge * contract.crewSize} fee={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
-                        <ProjectionCard label="Monthly" days={21} charge={contract.cTotalCharge * contract.crewSize} fee={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
-                        <ProjectionCard label="Annual" days={230} charge={contract.cTotalCharge * contract.crewSize} fee={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </TabsContent>
-
-          {/* ─────────────── PERMANENT TAB ─────────────── */}
-          <TabsContent value="perm" className="m-0 animate-in fade-in duration-400">
-             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-               <div className="lg:col-span-5 space-y-6 print:hidden">
-                 <CollapsibleCard title="Perm Settings" icon={Briefcase} defaultOpen>
-                    <div className="space-y-4 mb-4">
-                      <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Salary Currency</label>
-                      <SegmentedControl value={s.pCurrency} onChange={(v: string) => s.updateField('pCurrency', v as CurrencyCode)} options={CURRENCIES.map(c => ({label: c, value: c}))} ariaLabel="Perm Currency" />
-                    </div>
-
-                    <AnimatedSection show={s.pCurrency !== 'GBP'}>
-                      <div className="space-y-3 p-4 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-xl mt-2 mb-4">
-                        <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-slate-50"><Globe className="h-4 w-4" />Exchange Rate</div>
-                        <div className="space-y-1">
-                          <label htmlFor="p-fx-date" className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Placement / Start Date</label>
-                          <input id="p-fx-date" type="date" value={s.pFxDate} onChange={(e) => s.updateField('pFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 transition-all text-sm font-medium" />
-                        </div>
-                        <div className="flex items-center justify-between rounded-lg bg-white/50 dark:bg-black/20 border border-slate-200 dark:border-slate-800 px-3 py-2.5">
-                          {pFx.isManual ? (
-                            <div className="flex items-center gap-2 w-full">
-                              <span className="text-sm font-bold text-slate-900 dark:text-slate-50 whitespace-nowrap">1 {s.pCurrency} = </span>
-                              <input type="number" value={pFx.manualRate} onChange={(e) => pFx.setManualRate(e.target.value)} placeholder="0.0000" className="w-full px-2 py-1 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20" />
-                              <span className="text-sm font-bold text-slate-900 dark:text-slate-50">GBP</span>
-                            </div>
-                          ) : (
-                             <div className="text-sm font-medium">
-                               {pFx.loading ? <span className="text-slate-500 dark:text-slate-400">Fetching rate…</span> : pFx.rate !== null ? <span className="font-mono font-bold text-slate-900 dark:text-slate-50">1 {s.pCurrency} = {pFx.rate.toFixed(4)} GBP</span> : <span className="text-slate-500 dark:text-slate-400">No rate yet</span>}
-                             </div>
-                          )}
-                          {!pFx.isManual && (
-                             <button onClick={pFx.refresh} aria-label="Refresh exchange rate" className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white"><RefreshCw className={cn('h-3.5 w-3.5', pFx.loading && 'animate-spin')} /></button>
-                          )}
-                        </div>
-                        <div className="flex items-center justify-between pt-1 px-1">
-                          <label className="text-xs font-bold cursor-pointer text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 transition-colors" onClick={() => pFx.setIsManual(!pFx.isManual)}>Manual Override</label>
-                          <Switch checked={pFx.isManual} onCheckedChange={(v: boolean) => pFx.setIsManual(v)} className="scale-75 origin-right" />
-                        </div>
-                      </div>
-                    </AnimatedSection>
-
-                    <div className="space-y-2">
-                      <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Candidate Annual Salary ({s.pCurrency})</label>
-                      <NumInput value={s.salary} onChange={(v: string) => s.updateField('salary', v)} prefix={curSym(s.pCurrency)} />
-                    </div>
-                    <div className="space-y-2 mt-4">
-                      <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Placement Fee (%)</label>
-                      <NumInput value={s.placementFee} onChange={(v: string) => s.updateField('placementFee', v)} suffix="%" />
-                    </div>
-
-                    <AnimatedSection show={s.pCurrency !== 'GBP'}>
-                       <div className="flex justify-between group border-t border-slate-100 dark:border-slate-800 pt-4 mt-4">
-                         <div className="space-y-1 pr-4">
-                           <label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('invoiceInOrigin', !s.invoiceInOrigin)}>Invoice in Origin Currency</label>
-                           <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Calculate placement fee in {s.pCurrency} instead of GBP</p>
-                         </div>
-                         <Switch checked={s.invoiceInOrigin} onCheckedChange={(v: boolean) => s.updateField('invoiceInOrigin', v)} />
-                       </div>
-                    </AnimatedSection>
-
-                    <div className="flex justify-between border-t border-slate-100 dark:border-slate-800 mt-4 pt-4"><label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('includePermNI', !s.includePermNI)}>Include Employer's NI</label><Switch checked={s.includePermNI} onCheckedChange={(v: boolean) => s.updateField('includePermNI', v)} /></div>
-                 </CollapsibleCard>
-               </div>
-
-               <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
-                  {perm.pSalaryInput === 0 && !dbSalary ? (
-                    <div className="absolute inset-0 z-10 bg-white/95 dark:bg-slate-900/95 flex flex-col items-center justify-center text-center p-10 animate-in fade-in duration-500 print:hidden">
-                      <div className="p-4 bg-black/5 dark:bg-white/10 rounded-full mb-4">
-                        <Briefcase className="h-8 w-8 text-slate-900 dark:text-cyan-400" />
-                      </div>
-                      <h3 className="text-xl font-bold mb-2 text-slate-900 dark:text-slate-50">Awaiting Parameters</h3>
-                      <p className="text-slate-500 dark:text-slate-400 font-medium max-w-sm">
-                        Enter a candidate salary and placement fee to generate the invoice breakdown.
-                      </p>
-                    </div>
-                  ) : null}
-
-                  <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
-                    <div className="flex items-center justify-between gap-4 mb-8">
-                      <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">Permanent Invoice Breakdown</h2>
-                      <div className="flex gap-2">
-                         <ActionButton onClick={copyPermSummary} icon={Copy} label="Copy" />
-                         <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
-                         <ActionButton onClick={exportPermCSV} icon={Download} label="CSV" />
-                      </div>
-                    </div>
-                    <div className="space-y-4">
-                      <LineItem label={`Annual Salary (${s.pCurrency})`} value={perm.pSalaryInput} currency={s.pCurrency} />
-                      {s.pCurrency !== 'GBP' && (
-                        <LineItem label={pFx.rate !== null ? `Converted @ 1 ${s.pCurrency} = ${pFx.rate.toFixed(4)} GBP` : 'Converted (awaiting rate…)'} value={perm.pSalary} />
-                      )}
-
-                      {!perm.pFxReady ? (
-                        <div className="flex items-center gap-2 bg-amber-50 dark:bg-cyan-500/10 border border-amber-200 dark:border-cyan-500/20 rounded-xl px-4 py-3 text-sm font-semibold text-amber-600 dark:text-cyan-400">
-                          <AlertCircle className="h-4 w-4 shrink-0" /> Waiting on exchange rate...
-                        </div>
-                      ) : (
-                        <>
-                          <LineItem label={`Placement Fee (${perm.pFeePct}%)`} value={perm.pPlacementFee} isBold currency={s.invoiceInOrigin ? s.pCurrency : 'GBP'} />
-                          <div className="text-xs text-slate-600 dark:text-slate-400 font-medium bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 p-2.5 rounded-lg flex items-center gap-2">
-                            <Info className="h-3.5 w-3.5 shrink-0" />
-                            <span>Fee = {perm.pFeePct}% × {formatCurrencyIn(s.invoiceInOrigin ? perm.pSalaryInput : perm.pSalary, s.invoiceInOrigin ? s.pCurrency : 'GBP')}</span>
-                          </div>
-                        </>
-                      )}
-
-                      {s.includePermNI && perm.pFxReady && (<><div className="h-px bg-black/10 dark:bg-white/10 my-4" /><LineItem label="Employer's NI on Salary (UK Tax)" value={perm.pEmployerNI} currency="GBP" /></>)}
-
-                      <div className="mt-4 pt-5 border-t-2 border-black/10 dark:border-white/10 flex items-center justify-between">
-                        <span className="text-lg font-bold text-slate-900 dark:text-slate-50">Total Invoice to Client</span>
-                        <span className="text-3xl font-mono font-bold text-emerald-600 dark:text-emerald-400 animate-in zoom-in-95 duration-200">{formatCurrencyIn(s.includePermNI ? perm.pTotalCost : perm.pPlacementFee, s.invoiceInOrigin ? s.pCurrency : 'GBP')}</span>
-                      </div>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
-                        {s.invoiceInOrigin && s.pCurrency !== 'GBP' && s.includePermNI ? "Notice: Cost blends multiple currencies." : s.invoiceInOrigin ? `Invoiced strictly in ${s.pCurrency}.` : "Invoiced in GBP regardless of origin salary currency."}
-                      </p>
-                    </div>
-                  </div>
-               </div>
-             </div>
-          </TabsContent>
-
-          {/* ─────────────── TRIP BREAKDOWN TAB (Spreadsheet Style) ─────────────── */}
+          {/* ─────────────── 1. TRIP BREAKDOWN TAB ─────────────── */}
           <TabsContent value="trip" className="m-0 animate-in fade-in duration-400">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              <div className="lg:col-span-4 flex flex-col gap-6 print:hidden">
+              <div className={cn("flex flex-col gap-6 print:hidden", s.tbShowContractBreakdown ? "lg:col-span-3" : "lg:col-span-4")}>
                 <CollapsibleCard title="Hitch Parameters" icon={CalendarRange} defaultOpen>
                   <div className="space-y-4">
                     <div className="space-y-2">
@@ -1990,8 +1564,9 @@ export default function CalculatorPage() {
                 </CollapsibleCard>
               </div>
 
-              <div className="lg:col-span-8 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
-                <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
+              {/* Main Trip Schedule Table View */}
+              <div className={cn("sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static", s.tbShowContractBreakdown ? "lg:col-span-5" : "lg:col-span-8")}>
+                <div className="p-6 md:p-8 flex-grow relative z-0 print:p-0">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                     <div>
                       <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">Trip Schedule Breakdown</h2>
@@ -2004,12 +1579,22 @@ export default function CalculatorPage() {
                         <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-400 cursor-pointer select-none bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 px-2.5 py-1.5 rounded-lg transition-colors border border-black/5 dark:border-white/10">
                           <input 
                             type="checkbox" 
+                            checked={s.tbShowContractBreakdown} 
+                            onChange={(e) => s.updateField('tbShowContractBreakdown', e.target.checked)} 
+                            className="rounded border-slate-300 dark:border-slate-700 text-slate-900 focus:ring-slate-900 dark:focus:ring-white h-3.5 w-3.5"
+                          />
+                          <span>Show Contract Breakdown</span>
+                        </label>
+                        <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-400 cursor-pointer select-none bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 px-2.5 py-1.5 rounded-lg transition-colors border border-black/5 dark:border-white/10">
+                          <input 
+                            type="checkbox" 
                             checked={s.tbExcludeHeadersOnCopy} 
                             onChange={(e) => s.updateField('tbExcludeHeadersOnCopy', e.target.checked)} 
                             className="rounded border-slate-300 dark:border-slate-700 text-slate-900 focus:ring-slate-900 dark:focus:ring-white h-3.5 w-3.5"
                           />
                           <span>Exclude Headers</span>
                         </label>
+                        <ActionButton onClick={copyWorkingDayChargeNote} icon={MessageSquare} label="Copy Note" />
                         <ActionButton onClick={copyTripBreakdownSummary} icon={Copy} label="Copy Table" />
                         <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
                         <ActionButton onClick={exportTripBreakdownCSV} icon={Download} label="CSV" />
@@ -2034,48 +1619,53 @@ export default function CalculatorPage() {
                     </div>
                   ) : (
                     <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm print:border-gray-300">
-                      <table className="w-full text-left text-xs sm:text-sm border-collapse font-medium">
+                      <table className="w-full text-left text-xs border-collapse font-medium">
                         <thead>
-                          <tr className="bg-slate-100/75 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs uppercase tracking-wider print:bg-gray-100 print:text-black">
-                            <th className="py-3 px-3">Pay Rate</th>
-                            <th className="py-3 px-3">Client</th>
-                            <th className="py-3 px-3">Rank</th>
-                            <th className="py-3 px-3">Vessel</th>
-                            <th className="py-3 px-3">Flag State</th>
-                            <th className="py-3 px-3">Type</th>
-                            <th className="py-3 px-3">Start</th>
-                            <th className="py-3 px-3">End</th>
-                            <th className="py-3 px-3">Days</th>
-                            <th className="py-3 px-3">Charge Rate</th>
-                            <th className="py-3 px-3">{s.pdPayrollType === 'fortnightly' ? 'Period' : 'Month'}</th>
-                            <th className="py-3 px-3 text-right">Payday Days</th>
+                          <tr className="bg-slate-100/75 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-bold text-[11px] uppercase tracking-wider print:bg-gray-100 print:text-black">
+                            <th className="py-2.5 px-2.5">Pay Rate (B)</th>
+                            <th className="py-2.5 px-2.5">Client (C)</th>
+                            <th className="py-2.5 px-2.5">Rank (D)</th>
+                            <th className="py-2.5 px-2.5">Vessel (E)</th>
+                            <th className="py-2.5 px-2.5">Flag (F)</th>
+                            <th className="py-2.5 px-2.5">Type (G)</th>
+                            <th className="py-2.5 px-2.5">Start (H)</th>
+                            <th className="py-2.5 px-2.5">End (I)</th>
+                            <th className="py-2.5 px-2.5">Days (J)</th>
+                            <th className="py-2.5 px-2.5">Charge (N)</th>
+                            <th className="py-2.5 px-2.5">{s.pdPayrollType === 'fortnightly' ? 'Period (Q)' : 'Month (Q)'}</th>
+                            <th className="py-2.5 px-2.5 text-right">Paydays (R)</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 print:divide-gray-200">
                           {tripBreakdown.rows.map((row, idx) => (
                             <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors text-slate-900 dark:text-slate-200 print:text-black">
-                              <td className="py-3 px-3 font-mono font-bold">{row.payRateFormatted || '-'}</td>
-                              <td className="py-3 px-3 font-semibold">{row.client}</td>
-                              <td className="py-3 px-3">{row.rank}</td>
-                              <td className="py-3 px-3">{row.vessel}</td>
-                              <td className="py-3 px-3">{row.flagState}</td>
-                              <td className="py-3 px-3">{row.vesselType}</td>
-                              <td className="py-3 px-3 font-mono tabular-nums">{row.startDate}</td>
-                              <td className="py-3 px-3 font-mono tabular-nums">{row.endDate}</td>
-                              <td className="py-3 px-3 font-mono font-bold text-cyan-600 dark:text-cyan-400 print:text-black tabular-nums">{row.description}</td>
-                              <td className="py-3 px-3 font-mono font-bold">{row.chargeRateFormatted || '-'}</td>
-                              <td className="py-3 px-3 font-mono font-bold text-slate-600 dark:text-slate-300">{row.periodLabel || '-'}</td>
-                              <td className="py-3 px-3 font-mono font-bold text-right text-emerald-600 dark:text-emerald-400 print:text-black tabular-nums">{row.paydayDaysDesc || '-'}</td>
+                              <td className="py-2.5 px-2.5 font-mono font-bold whitespace-nowrap">{row.payRateFormatted || '-'}</td>
+                              <td className="py-2.5 px-2.5 font-semibold whitespace-nowrap">{row.client}</td>
+                              <td className="py-2.5 px-2.5 whitespace-nowrap">{row.rank}</td>
+                              <td className="py-2.5 px-2.5 whitespace-nowrap">{row.vessel}</td>
+                              <td className="py-2.5 px-2.5 whitespace-nowrap">{row.flagState}</td>
+                              <td className="py-2.5 px-2.5 whitespace-nowrap">{row.vesselType}</td>
+                              <td className="py-2.5 px-2.5 font-mono tabular-nums whitespace-nowrap">{row.startDate}</td>
+                              <td className="py-2.5 px-2.5 font-mono tabular-nums whitespace-nowrap">{row.endDate}</td>
+                              <td className="py-2.5 px-2.5 font-mono font-bold text-cyan-600 dark:text-cyan-400 print:text-black tabular-nums whitespace-nowrap">{row.description}</td>
+                              <td className="py-2.5 px-2.5 font-mono font-bold whitespace-nowrap relative group/note cursor-help" title={row.rateNote}>
+                                {row.chargeRateFormatted || '-'}
+                                {row.chargeRateFormatted && (
+                                  <span className="absolute -top-0.5 right-1 text-[9px] text-red-500 font-bold select-none pointer-events-none">▲</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-2.5 font-mono font-bold text-slate-600 dark:text-slate-300 whitespace-nowrap">{row.periodLabel || '-'}</td>
+                              <td className="py-2.5 px-2.5 font-mono font-bold text-right text-emerald-600 dark:text-emerald-400 print:text-black tabular-nums whitespace-nowrap">{row.paydayDaysDesc || '-'}</td>
                             </tr>
                           ))}
                         </tbody>
                         <tfoot>
                           <tr className="bg-slate-50 dark:bg-slate-800/30 font-bold text-slate-900 dark:text-slate-50 border-t-2 border-slate-200 dark:border-slate-800 print:border-gray-300 print:bg-transparent print:text-black">
-                            <td colSpan={8} className="py-3 px-3 text-right text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 print:text-gray-600">Total Duration:</td>
-                            <td className="py-3 px-3 font-mono text-base text-cyan-600 dark:text-cyan-400 print:text-black">
+                            <td colSpan={8} className="py-3 px-2.5 text-right text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 print:text-gray-600">Total:</td>
+                            <td className="py-3 px-2.5 font-mono text-sm text-cyan-600 dark:text-cyan-400 print:text-black whitespace-nowrap">
                               {tripBreakdown.rows.reduce((acc, r) => acc + r.rawDays, 0)} Days
                             </td>
-                            <td colSpan={3} className="py-3 px-3 font-mono text-right text-base text-emerald-600 dark:text-emerald-400 print:text-black">
+                            <td colSpan={3} className="py-3 px-2.5 font-mono text-right text-sm text-emerald-600 dark:text-emerald-400 print:text-black whitespace-nowrap">
                               {paydays.totalDays ? `${paydays.totalDays} Payable Days` : ''}
                             </td>
                           </tr>
@@ -2085,10 +1675,43 @@ export default function CalculatorPage() {
                   )}
                 </div>
               </div>
+
+              {/* Side-by-side Contract Breakdown Card */}
+              {s.tbShowContractBreakdown && (
+                <div className="lg:col-span-4 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:hidden animate-in fade-in slide-in-from-right-4 duration-300">
+                  <div className="p-6">
+                    <div className="flex items-center justify-between gap-4 mb-4 border-b border-slate-100 dark:border-slate-800 pb-3">
+                      <h3 className="text-base font-bold text-slate-900 dark:text-slate-50">Day Rate Charge Breakdown</h3>
+                      <ActionButton onClick={copyContractBreakdown} icon={Copy} label="Copy" />
+                    </div>
+
+                    <div className="space-y-2.5">
+                      <LineItem label={`Consolidated Day Rate ${s.crewSize !== '1' ? '(Total Crew)' : ''}`} value={contract.cRate * contract.crewSize} isBold currency={s.cCurrency} />
+                      {s.includePension && <LineItem label={`Pension (${activeFiscalRates.pension * 100}%)`} value={contract.cPension * contract.crewSize} currency={s.cCurrency} />}
+                      {s.includeAppyLevy && <LineItem label={`Apprenticeship Levy (${activeFiscalRates.apprenticeshipLevy * 100}%)`} value={contract.cAppyLevy * contract.crewSize} currency={s.cCurrency} />}
+                      {s.includeContingency && <LineItem label={`Contingency (${s.contingencyType === 'percentage' && contract.cContingency > 0 ? dbContingencyValue + '%' : 'Fixed'})`} value={contract.cContingency * contract.crewSize} currency={s.cCurrency} />}
+
+                      {s.includeNI && (
+                        <LineItem label={s.seafarerExempt ? "Employers NIC (Exempt)" : `Employers NIC (${activeFiscalRates.employerNI * 100}%)`} value={contract.cEmployerNI * contract.crewSize} currency={s.cCurrency} />
+                      )}
+                      {s.includeSubsistence && contract.cSubTravelAmt > 0 && (() => { const tDays = s.includeTrip ? Math.max(1, parseFloat(dbTravelDays) || 1) : Math.max(1, parseFloat(dbSubTravelDays) || 1); return <LineItem label={`Travel Subsistence (×${tDays}d)`} value={contract.cSubTravelAmt * contract.crewSize * tDays} currency={s.cCurrency} />; })()}
+                      {s.includeSubsistence && contract.cSubOnboardAmt > 0 && <LineItem label="Onboard Victualling/Sub" value={contract.cSubOnboardAmt * contract.crewSize} currency={s.cCurrency} />}
+                      <LineItem label={`Management Fee (${contract.feeType === 'percentage' && contract.cMarginVal > 0 ? `${contract.cMarginVal}%` : 'Fixed'})`} value={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
+
+                      <div className="mt-4 pt-4 border-t-2 border-black/10 dark:border-white/10 flex items-center justify-between">
+                        <span className="text-sm font-bold text-slate-900 dark:text-slate-50">Total Charge / Day</span>
+                        <span className="text-xl font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                          {formatCurrencyIn(contract.cTotalCharge * contract.crewSize, s.cCurrency)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </TabsContent>
 
-          {/* ─────────────── PAYMENT DAYS TAB ─────────────── */}
+          {/* ─────────────── 2. PAYMENT DAYS TAB ─────────────── */}
           <TabsContent value="paydays" className="m-0 animate-in fade-in duration-400">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
               <div className="lg:col-span-5 flex flex-col gap-6 print:hidden">
@@ -2299,7 +1922,283 @@ export default function CalculatorPage() {
             </div>
           </TabsContent>
 
-          {/* ─────────────── REFERENCE TAB ─────────────── */}
+          {/* ─────────────── 3. CONTRACT TAB ─────────────── */}
+          <TabsContent value="contract" className="m-0 animate-in fade-in duration-400">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              <div className="lg:col-span-5 flex flex-col gap-6 print:hidden">
+                <CollapsibleCard title="Day Rate & Tax" icon={FileText} defaultOpen>
+                  <div className="space-y-4 mb-4">
+                    <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Currency & Crew</label>
+                    <div className="flex gap-2">
+                      <SegmentedControl value={s.cCurrency} onChange={(v: string) => s.updateField('cCurrency', v as CurrencyCode)} options={CURRENCIES.map(c => ({label: c, value: c}))} ariaLabel="Currency" />
+                    </div>
+                    <AnimatedSection show={s.cCurrency !== 'GBP'}>
+                      <div className="space-y-3 p-4 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-xl mb-6">
+                        <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-slate-50">
+                          <Globe className="h-4 w-4" />Exchange Rate
+                        </div>
+                        <div className="space-y-1">
+                          <label htmlFor="c-fx-date" className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Placement / Start Date</label>
+                          <input id="c-fx-date" type="date" value={s.cFxDate} onChange={(e) => s.updateField('cFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 transition-all text-sm font-medium" />
+                        </div>
+                        <div className="flex items-center justify-between rounded-lg bg-white/50 dark:bg-black/20 border border-slate-200 dark:border-slate-800 px-3 py-2.5">
+                          {cFx.isManual ? (
+                            <div className="flex items-center gap-2 w-full">
+                              <span className="text-sm font-bold text-slate-900 dark:text-slate-50 whitespace-nowrap">1 {s.cCurrency} = </span>
+                              <input type="number" value={cFx.manualRate} onChange={(e) => cFx.setManualRate(e.target.value)} placeholder="0.0000" className="w-full px-2 py-1 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20" />
+                              <span className="text-sm font-bold text-slate-900 dark:text-slate-50">GBP</span>
+                            </div>
+                          ) : (
+                             <div className="text-sm font-medium">
+                               {cFx.loading ? (
+                                 <span className="text-slate-500 dark:text-slate-400">Fetching rate…</span>
+                               ) : cFx.rate !== null ? (
+                                 <span className="font-mono font-bold animate-in fade-in duration-300 text-slate-900 dark:text-slate-50">1 {s.cCurrency} = {cFx.rate.toFixed(4)} GBP</span>
+                               ) : (
+                                 <span className="text-slate-500 dark:text-slate-400">No rate yet</span>
+                               )}
+                             </div>
+                          )}
+                          {!cFx.isManual && (
+                             <button onClick={cFx.refresh} aria-label="Refresh exchange rate" className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white">
+                               <RefreshCw className={cn('h-3.5 w-3.5', cFx.loading && 'animate-spin')} />
+                             </button>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between pt-1 px-1">
+                          <label className="text-xs font-bold cursor-pointer text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 transition-colors" onClick={() => cFx.setIsManual(!cFx.isManual)}>Manual Override</label>
+                          <Switch checked={cFx.isManual} onCheckedChange={(v: boolean) => cFx.setIsManual(v)} className="scale-75 origin-right" />
+                        </div>
+                        {cFx.error === 'future-date-fallback' && !cFx.isManual && (
+                          <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-500 font-medium mt-2">
+                            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                            <span>Future date selected. Showing today's latest rate instead.</span>
+                          </div>
+                        )}
+                      </div>
+                    </AnimatedSection>
+                    <div className="flex items-center justify-between gap-4 p-3 bg-black/5 dark:bg-white/5 rounded-xl border border-black/10 dark:border-white/10">
+                      <label className="text-sm font-bold flex items-center gap-2 text-slate-900 dark:text-slate-50"><Users className="h-4 w-4"/> Crew Size (Multiplier)</label>
+                      <input type="number" min="1" value={s.crewSize} onChange={(e) => s.updateField('crewSize', e.target.value)} className="w-20 px-3 py-1.5 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 rounded-lg font-mono text-center focus:ring-2 focus:ring-slate-900 dark:focus:ring-white outline-none" />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Consolidated Rate — Seafarer Pay</label>
+                    <NumInput value={s.consolidatedRate} onChange={(v: string) => s.updateField('consolidatedRate', v)} prefix={curSym(s.cCurrency)} />
+                  </div>
+
+                  <div className="space-y-3 pt-2">
+                    <div className="flex justify-between group">
+                      <div className="space-y-1 pr-4">
+                        <label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('includePension', !s.includePension)}>Include Pension</label>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Standard {activeFiscalRates.pension * 100}% addition</p>
+                      </div>
+                      <Switch checked={s.includePension} onCheckedChange={(v: boolean) => s.updateField('includePension', v)} />
+                    </div>
+                    <div className="flex justify-between group">
+                      <div className="space-y-1 pr-4">
+                        <label className="text-sm font-bold flex items-center cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('includeAppyLevy', !s.includeAppyLevy)}>Include Apprenticeship Levy <Tooltip text="A 0.5% tax on large employers to fund apprenticeship training." /></label>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Standard {activeFiscalRates.apprenticeshipLevy * 100}% addition</p>
+                      </div>
+                      <Switch checked={s.includeAppyLevy} onCheckedChange={(v: boolean) => s.updateField('includeAppyLevy', v)} />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('includeContingency', !s.includeContingency)}>Add Contingency</label><Switch checked={s.includeContingency} onCheckedChange={(v: boolean) => s.updateField('includeContingency', v)} /></div>
+                      <AnimatedSection show={s.includeContingency}>
+                        <div className="flex items-center gap-2 pt-1">
+                           <div className="w-24"><SegmentedControl value={s.contingencyType} onChange={(v: string) => s.updateField('contingencyType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Contingency Type" /></div>
+                           <NumInput value={s.contingencyValue} onChange={(v: string) => s.updateField('contingencyValue', v)} prefix={s.contingencyType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.contingencyType === 'percentage' ? '%' : undefined} />
+                        </div>
+                      </AnimatedSection>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 pt-4 border-t border-slate-100 dark:border-slate-800 mt-4">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Management Fee</label>
+                      <div className="w-32"><SegmentedControl value={s.feeType} onChange={(v: string) => s.updateField('feeType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Fee Type" /></div>
+                    </div>
+                    <NumInput value={s.margin} onChange={(v: string) => s.updateField('margin', v)} prefix={s.feeType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.feeType === 'percentage' ? '%' : undefined} />
+                  </div>
+
+                  <div className="pt-4 space-y-4 border-t border-slate-100 dark:border-slate-800 mt-4">
+                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('includeNI', !s.includeNI)}>Include Employer's NI</label><Switch checked={s.includeNI} onCheckedChange={(v: boolean) => s.updateField('includeNI', v)} /></div>
+                    <AnimatedSection show={s.includeNI}>
+                      <div className="space-y-3 bg-amber-500/5 dark:bg-cyan-500/5 p-4 rounded-xl border border-amber-500/20 dark:border-cyan-500/20">
+                        <SegmentedControl value={s.niMode} onChange={(v: string) => s.updateField('niMode', v as 'base' | 'total')} options={[{label: 'Base Rate', value: 'base'}, {label: 'Total Amount', value: 'total'}]} ariaLabel="NI Mode" />
+                        <div className="flex justify-between items-center pt-2"><label className="text-sm font-bold text-amber-700 dark:text-cyan-400">Seafarer Exemption <Tooltip text="UK Continental Shelf. Vessels operating wholly outside this may be exempt from Employer's NI." /></label><Switch checked={s.seafarerExempt} onCheckedChange={(v: boolean) => s.updateField('seafarerExempt', v)} /></div>
+                      </div>
+                    </AnimatedSection>
+                  </div>
+                </CollapsibleCard>
+
+                <CollapsibleCard title="Subsistence & Victualling" icon={UtensilsCrossed} defaultOpen={false}>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-bold cursor-pointer flex items-center text-slate-900 dark:text-slate-50" onClick={() => s.updateField('includeSubsistence', !s.includeSubsistence)}>
+                      Enable Subsistence
+                      <Tooltip text="Food and provisions provided onboard. Typically £0 as covered by the vessel." />
+                    </label>
+                    <Switch checked={s.includeSubsistence} onCheckedChange={(v: boolean) => { s.updateField('includeSubsistence', v); if (!v) s.updateField('subsistenceInFee', false); }} />
+                  </div>
+                  <AnimatedSection show={s.includeSubsistence} className="pt-3 space-y-5 border-t border-slate-100 dark:border-slate-800 mt-3">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel (per day)</label><NumInput value={s.subsistenceTravel} onChange={(v: string) => s.updateField('subsistenceTravel', v)} prefix={curSym(s.cCurrency)} /></div>
+                      {!s.includeTrip && <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel Days</label><NumInput value={s.subsistenceTravelDays} onChange={(v: string) => s.updateField('subsistenceTravelDays', v)} placeholder="1" /></div>}
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Onboard (per day)</label><NumInput value={s.subsistenceOnboard} onChange={(v: string) => s.updateField('subsistenceOnboard', v)} prefix={curSym(s.cCurrency)} /></div>
+                    </div>
+                    <div className="flex justify-between group"><label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.includeSubsistence && s.updateField('subsistenceInFee', !s.subsistenceInFee)}>Apply margin to subsistence</label><Switch checked={s.subsistenceInFee} onCheckedChange={(v: boolean) => s.updateField('subsistenceInFee', v)} disabled={!s.includeSubsistence} /></div>
+                  </AnimatedSection>
+                </CollapsibleCard>
+
+                <CollapsibleCard title="Hitch & Logistics Scheduler" icon={Anchor} defaultOpen={false}>
+                   <div className="flex justify-between"><label className="text-sm font-bold text-slate-900 dark:text-slate-50">Enable Hitch Scheduler</label><Switch checked={s.includeTrip} onCheckedChange={(v: boolean) => s.updateField('includeTrip', v)} /></div>
+                   <AnimatedSection show={s.includeTrip} className="pt-4 space-y-4 border-t border-slate-100 dark:border-slate-800 mt-3">
+                     <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Days Onboard</label><NumInput value={s.workingDays} onChange={(v: string) => s.updateField('workingDays', v)} placeholder="Working Days" /></div>
+                     <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-100 dark:border-slate-800">
+                       <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel Days</label><NumInput value={s.travelDays} onChange={(v: string) => s.updateField('travelDays', v)} placeholder="Travel Days" /></div>
+                       <div className="space-y-2"><label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Charge Rate</label><SegmentedControl value={s.travelDayFull ? 'full' : 'half'} onChange={(v: string) => s.updateField('travelDayFull', v === 'full')} options={[{label: '0.5 rate', value: 'half'}, {label: 'Full rate', value: 'full'}]} ariaLabel="Travel Rate" /></div>
+                     </div>
+                     <div className="space-y-3 pt-4 border-t border-slate-100 dark:border-slate-800">
+                       <div className="flex items-center justify-between"><label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Travel & Logistics Costs</label><div className="flex items-center gap-2"><label className="text-xs font-bold text-slate-500 dark:text-slate-400 cursor-pointer" onClick={() => s.updateField('logisticsInFee', !s.logisticsInFee)}>Add Travel Fee</label><Switch checked={s.logisticsInFee} onCheckedChange={(v: boolean) => s.updateField('logisticsInFee', v)} className="scale-75 origin-right" /></div></div>
+                       <div className="grid grid-cols-3 gap-2">
+                         <NumInput value={s.mobTravel} onChange={(v: string) => s.updateField('mobTravel', v)} placeholder="Travel" prefix={curSym(s.cCurrency)} />
+                         <NumInput value={s.mobVisas} onChange={(v: string) => s.updateField('mobVisas', v)} placeholder="Visas" prefix={curSym(s.cCurrency)} />
+                         <NumInput value={s.mobAgent} onChange={(v: string) => s.updateField('mobAgent', v)} placeholder="Agent" prefix={curSym(s.cCurrency)} />
+                       </div>
+                       <AnimatedSection show={s.logisticsInFee} className="space-y-2 pt-3">
+                         <div className="flex items-center justify-between">
+                           <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Travel Fee</label>
+                           <div className="w-28"><SegmentedControl value={s.travelFeeType} onChange={(v: string) => s.updateField('travelFeeType', v as 'percentage' | 'fixed')} options={[{label: '%', value: 'percentage'}, {label: curSym(s.cCurrency), value: 'fixed'}]} ariaLabel="Travel Fee Type" /></div>
+                         </div>
+                         <NumInput value={s.travelFee} onChange={(v: string) => s.updateField('travelFee', v)} prefix={s.travelFeeType === 'fixed' ? curSym(s.cCurrency) : undefined} suffix={s.travelFeeType === 'percentage' ? '%' : undefined} />
+                       </AnimatedSection>
+                     </div>
+                   </AnimatedSection>
+                </CollapsibleCard>
+              </div>
+
+              <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
+                <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
+                  <div className="flex items-center justify-between gap-4 mb-8">
+                    <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">{s.crewSize !== '1' ? `Crew Charge Breakdown (${s.crewSize} Members)` : 'Charge Rate Breakdown'}</h2>
+                    <div className="flex items-center gap-2">
+                      <ActionButton onClick={copyContractBreakdown} icon={Copy} label="Copy" />
+                      <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
+                      <ActionButton onClick={exportContractCSV} icon={Download} label="CSV" />
+                    </div>
+                  </div>
+
+                  <div className="h-24 w-full mb-6 print:hidden">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie data={chartData} cx="50%" cy="50%" innerRadius={30} outerRadius={45} paddingAngle={2} dataKey="value" stroke="none">
+                          {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                        </Pie>
+                        <ChartTooltip formatter={(value: number) => formatCurrencyIn(value, s.cCurrency)} contentStyle={{ borderRadius: '8px', border: 'none', backgroundColor: s.theme === 'dark' ? '#1E293B' : '#FFFFFF', color: s.theme === 'dark' ? '#F8FAFC' : '#0F172A', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} itemStyle={{ color: s.theme === 'dark' ? '#F8FAFC' : '#0F172A' }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="space-y-3">
+                    <LineItem label={`Consolidated Day Rate ${s.crewSize !== '1' ? '(Total Crew)' : ''}`} value={contract.cRate * contract.crewSize} isBold currency={s.cCurrency} />
+                    {s.includePension && <LineItem label={`Pension (${activeFiscalRates.pension * 100}%)`} value={contract.cPension * contract.crewSize} currency={s.cCurrency} />}
+                    {s.includeAppyLevy && <LineItem label={`Apprenticeship Levy (${activeFiscalRates.apprenticeshipLevy * 100}%)`} value={contract.cAppyLevy * contract.crewSize} currency={s.cCurrency} />}
+                    {s.includeContingency && <LineItem label={`Contingency (${s.contingencyType === 'percentage' && contract.cContingency > 0 ? dbContingencyValue + '%' : 'Fixed'})`} value={contract.cContingency * contract.crewSize} currency={s.cCurrency} />}
+
+                    {s.includeNI && (
+                      <LineItem label={s.seafarerExempt ? "Employers NIC (Exempt)" : `Employers NIC (${activeFiscalRates.employerNI * 100}%)`} value={contract.cEmployerNI * contract.crewSize} currency={s.cCurrency} />
+                    )}
+                    {s.includeSubsistence && contract.cSubTravelAmt > 0 && (() => { const tDays = s.includeTrip ? Math.max(1, parseFloat(dbTravelDays) || 1) : Math.max(1, parseFloat(dbSubTravelDays) || 1); return <LineItem label={`Travel Subsistence (×${tDays} day${tDays !== 1 ? 's' : ''})`} value={contract.cSubTravelAmt * contract.crewSize * tDays} currency={s.cCurrency} />; })()}
+                    {s.includeSubsistence && contract.cSubOnboardAmt > 0 && <LineItem label="Onboard Victualling/Sub" value={contract.cSubOnboardAmt * contract.crewSize} currency={s.cCurrency} />}
+                    <LineItem label={`Management Fee (${contract.feeType === 'percentage' && contract.cMarginVal > 0 ? `${contract.cMarginVal}%` : 'Fixed'})`} value={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
+
+                    <div className="mt-4 pt-5 border-t-2 border-black/10 dark:border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <span className="text-lg font-bold text-slate-900 dark:text-slate-50 block">Total Charge Per Day</span>
+                        {s.cCurrency !== 'GBP' && (
+                          <div className="flex items-center gap-2 mt-1.5 print:hidden">
+                            <span className="text-xs text-slate-500 dark:text-slate-400 font-semibold">Display Currency:</span>
+                            <div className="w-36">
+                              <SegmentedControl 
+                                value={s.displayCurrency} 
+                                onChange={(v: string) => s.updateField('displayCurrency', v as 'original' | 'gbp')} 
+                                options={[{label: s.cCurrency, value: 'original'}, {label: 'GBP (£)', value: 'gbp'}]} 
+                                ariaLabel="Display Currency Toggle"
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-3xl font-mono font-bold text-emerald-600 dark:text-emerald-400 animate-in zoom-in-95 duration-200">
+                        {s.displayCurrency === 'gbp' && s.cCurrency !== 'GBP' && cFx.rate !== null
+                          ? formatCurrencyIn(contract.cTotalCharge * contract.crewSize * cFx.rate, 'GBP')
+                          : formatCurrencyIn(contract.cTotalCharge * contract.crewSize, s.cCurrency)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+
+          {/* ─────────────── 4. PERMANENT TAB ─────────────── */}
+          <TabsContent value="perm" className="m-0 animate-in fade-in duration-400">
+             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+               <div className="lg:col-span-5 space-y-6 print:hidden">
+                 <CollapsibleCard title="Perm Settings" icon={Briefcase} defaultOpen>
+                    <div className="space-y-4 mb-4">
+                      <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Salary Currency</label>
+                      <SegmentedControl value={s.pCurrency} onChange={(v: string) => s.updateField('pCurrency', v as CurrencyCode)} options={CURRENCIES.map(c => ({label: c, value: c}))} ariaLabel="Perm Currency" />
+                    </div>
+
+                    <AnimatedSection show={s.pCurrency !== 'GBP'}>
+                      <div className="space-y-3 p-4 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-xl mt-2 mb-4">
+                        <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-slate-50"><Globe className="h-4 w-4" />Exchange Rate</div>
+                        <div className="space-y-1">
+                          <label htmlFor="p-fx-date" className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Placement / Start Date</label>
+                          <input id="p-fx-date" type="date" value={s.pFxDate} onChange={(e) => s.updateField('pFxDate', e.target.value)} className="w-full px-4 py-2.5 bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-50 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/20 dark:focus:ring-white/20 transition-all text-sm font-medium" />
+                        </div>
+                      </div>
+                    </AnimatedSection>
+
+                    <div className="space-y-2">
+                      <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Candidate Annual Salary ({s.pCurrency})</label>
+                      <NumInput value={s.salary} onChange={(v: string) => s.updateField('salary', v)} prefix={curSym(s.pCurrency)} />
+                    </div>
+                    <div className="space-y-2 mt-4">
+                      <label className="block text-sm font-bold text-slate-900 dark:text-slate-50">Placement Fee (%)</label>
+                      <NumInput value={s.placementFee} onChange={(v: string) => s.updateField('placementFee', v)} suffix="%" />
+                    </div>
+                 </CollapsibleCard>
+               </div>
+
+               <div className="lg:col-span-7 sticky top-4 self-start bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-lg overflow-hidden flex flex-col relative print:bg-white print:border-none print:shadow-none print:static">
+                  <div className="p-8 md:p-10 flex-grow relative z-0 print:p-0">
+                    <div className="flex items-center justify-between gap-4 mb-8">
+                      <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">Permanent Invoice Breakdown</h2>
+                      <div className="flex gap-2">
+                         <ActionButton onClick={copyPermSummary} icon={Copy} label="Copy" />
+                         <ActionButton onClick={() => window.print()} icon={Printer} label="Print" />
+                         <ActionButton onClick={exportPermCSV} icon={Download} label="CSV" />
+                      </div>
+                    </div>
+                    <div className="space-y-4">
+                      <LineItem label={`Annual Salary (${s.pCurrency})`} value={perm.pSalaryInput} currency={s.pCurrency} />
+                      <LineItem label={`Placement Fee (${perm.pFeePct}%)`} value={perm.pPlacementFee} isBold currency={s.invoiceInOrigin ? s.pCurrency : 'GBP'} />
+                      <div className="mt-4 pt-5 border-t-2 border-black/10 dark:border-white/10 flex items-center justify-between">
+                        <span className="text-lg font-bold text-slate-900 dark:text-slate-50">Total Invoice to Client</span>
+                        <span className="text-3xl font-mono font-bold text-emerald-600 dark:text-emerald-400 animate-in zoom-in-95 duration-200">{formatCurrencyIn(perm.pPlacementFee, s.invoiceInOrigin ? s.pCurrency : 'GBP')}</span>
+                      </div>
+                    </div>
+                  </div>
+               </div>
+             </div>
+          </TabsContent>
+
+          {/* ─────────────── 5. REFERENCE TAB ─────────────── */}
           <TabsContent value="reference" className="m-0 animate-in fade-in duration-400">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
               <div className="lg:col-span-5 space-y-6 print:hidden">
@@ -2416,25 +2315,6 @@ export default function CalculatorPage() {
                            );
                         })}
                      </div>
-
-                     <h3 className="text-lg font-bold border-b border-slate-200 dark:border-slate-700 pb-2 mb-4 print:border-gray-300 text-slate-900 dark:text-slate-50 print:text-black">Compliance & Re-Hire</h3>
-                     <div className="space-y-2 mb-8">
-                         <div className="flex justify-between items-center text-sm border-b border-slate-200 dark:border-slate-700/50 pb-2 print:border-gray-200">
-                              <span className="font-medium text-slate-600 dark:text-slate-300 print:text-gray-700">Adhere to Alcohol & Drugs Policy:</span>
-                              <span className={cn("font-bold text-slate-900 dark:text-slate-50 print:text-black", !s.refDrugsPolicy && "text-slate-400 dark:text-slate-500 print:text-gray-400")}>{s.refDrugsPolicy || '-'}</span>
-                         </div>
-                         <div className="flex justify-between items-center text-sm border-b border-slate-200 dark:border-slate-700/50 pb-2 print:border-gray-200">
-                              <span className="font-medium text-slate-600 dark:text-slate-300 print:text-gray-700">Recommended for Re-Hire:</span>
-                              <span className={cn("font-bold", s.refReHire ? "text-slate-900 dark:text-cyan-400 print:text-black" : "text-slate-400 dark:text-slate-500 print:text-gray-400")}>{s.refReHire || '-'}</span>
-                         </div>
-                     </div>
-
-                     {s.refComments && (
-                       <div className="mt-8">
-                         <h3 className="text-lg font-bold border-b border-slate-200 dark:border-slate-700 pb-2 mb-4 print:border-gray-300 text-slate-900 dark:text-slate-50 print:text-black">Additional Comments</h3>
-                         <p className="text-sm whitespace-pre-wrap leading-relaxed bg-white dark:bg-[#172033] p-4 rounded-xl print:p-0 print:bg-transparent border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 print:border-none print:text-black">{s.refComments}</p>
-                       </div>
-                     )}
                   </div>
                 </div>
               </div>
@@ -2464,34 +2344,6 @@ const LineItem = React.memo(function LineItem({ label, value, isBold = false, cu
     <div className={cn('flex items-center justify-between py-1 group', isBold ? 'text-slate-900 dark:text-slate-50 font-bold print:text-black' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 transition-colors print:text-gray-700')}>
       <span className="text-sm font-medium">{label}</span>
       <span className={cn('font-mono tracking-tight tabular-nums transition-all', isBold ? 'text-base font-bold text-slate-900 dark:text-cyan-400' : 'text-sm font-semibold')}>{formatCurrencyIn(value, currency)}</span>
-    </div>
-  );
-});
-
-interface ProjectionCardProps {
-  label: string;
-  days: number;
-  charge: number;
-  fee: number;
-  currency?: string;
-}
-const ProjectionCard = React.memo(function ProjectionCard({ label, days, charge, fee, currency = 'GBP' }: ProjectionCardProps) {
-  return (
-    <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors print:border print:border-gray-200 print:bg-white">
-      <div className="text-sm font-bold text-slate-900 dark:text-slate-50 mb-4 flex items-center justify-between border-b border-slate-200 dark:border-slate-700 pb-2 print:text-black">
-        {label}
-        <span className="text-xs font-semibold text-slate-600 dark:text-slate-300 bg-slate-200 dark:bg-slate-700 px-2 py-0.5 rounded-md print:bg-gray-100 print:text-gray-600">{days} Days</span>
-      </div>
-      <div className="space-y-2.5">
-        <div className="flex justify-between text-sm">
-          <span className="text-slate-500 dark:text-slate-400 font-medium print:text-gray-600">Charge</span>
-          <span className="font-mono font-bold text-slate-900 dark:text-cyan-400 tabular-nums transition-all">{formatCurrencyIn(charge * days, currency)}</span>
-        </div>
-        <div className="flex justify-between text-sm pt-2 border-t border-slate-200 dark:border-slate-700 print:border-gray-200">
-          <span className="text-slate-500 dark:text-slate-400 font-medium print:text-gray-600">Fee Margin</span>
-          <span className="font-mono font-bold text-slate-900 dark:text-slate-50 print:text-black tabular-nums transition-all">{formatCurrencyIn(fee * days, currency)}</span>
-        </div>
-      </div>
     </div>
   );
 });
