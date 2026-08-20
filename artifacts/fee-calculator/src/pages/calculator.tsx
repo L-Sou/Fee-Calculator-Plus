@@ -84,7 +84,7 @@ export interface TripBreakdownRow {
   endDate: string;
   description: string;
   chargeRateFormatted: string;
-  periodMonth: string;
+  periodLabel: string;
   paydayDaysDesc: string;
   rawDays: number;
 }
@@ -354,9 +354,15 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
       carryDays = params.pdPayrollType === 'monthly' && days > 31 ? days - 31 : 0;
       if (carryDays > 0) days = 31;
 
-      const periodLabel = params.pdPayrollType === 'monthly'
-        ? `${MONTH_NAMES[payday.getMonth()]} ${payday.getFullYear()}`
-        : `${formatUK(periodStart)} – ${formatUK(periodEnd)}`;
+      // Period label formatting:
+      let periodLabel = '';
+      if (params.pdPayrollType === 'fortnightly') {
+        const fnNum = Math.floor(Math.round((payday.getTime() - FN_ANCHOR.getTime()) / (14 * 86400000))) * 2 + 2;
+        periodLabel = `${fnNum}`;
+      } else {
+        periodLabel = `${MONTH_NAMES[payday.getMonth()]} ${payday.getFullYear()}`;
+      }
+
       splits.push({ periodStart, periodEnd, cutoff, payday, periodLabel, days });
 
       if (finishReached && carryDays <= 0) break;
@@ -369,11 +375,12 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
   }
 }
 
-// ─── Monthly Trip Breakdown Engine ───────────────────────────────────────────
+// ─── Monthly & Fortnightly Trip Breakdown Engine ──────────────────────────────
 
-function generateMonthlyTripBreakdown(
+function generateTripBreakdown(
   startDateStr: string,
   endDateStr: string,
+  payrollType: 'monthly' | 'fortnightly',
   client: string,
   rank: string,
   vessel: string,
@@ -429,7 +436,7 @@ function generateMonthlyTripBreakdown(
       endDate: formatShortUK(currentStart),
       description: formatDayDesc(sVal, true),
       chargeRateFormatted,
-      periodMonth: '',
+      periodLabel: '',
       paydayDaysDesc: '',
       rawDays: sVal
     });
@@ -446,43 +453,84 @@ function generateMonthlyTripBreakdown(
     }
   }
 
-  // 3. Monthly Split for Onboard Hitch
+  // 3. Split Hitch Periods
   const workingRows: TripBreakdownRow[] = [];
   if (currentStart.getTime() <= workingEnd.getTime()) {
     let curr = new Date(currentStart);
     let loopGuard = 0;
-    while (curr.getTime() <= workingEnd.getTime() && loopGuard < 36) {
-      loopGuard++;
-      const year = curr.getFullYear();
-      const month = curr.getMonth();
-      const lastDayOfMonth = new Date(year, month + 1, 0, 12, 0, 0, 0);
-      const chunkEnd = workingEnd.getTime() < lastDayOfMonth.getTime() ? new Date(workingEnd) : lastDayOfMonth;
 
-      const diffDays = Math.round((chunkEnd.getTime() - curr.getTime()) / 86400000) + 1;
-      workingRows.push({
-        payRateFormatted,
-        client, rank, vessel, flagState, vesselType,
-        startDate: formatShortUK(curr),
-        endDate: formatShortUK(chunkEnd),
-        description: `${diffDays} Day${diffDays > 1 ? 's' : ''}`,
-        chargeRateFormatted,
-        periodMonth: formatShortMonthYear(curr),
-        paydayDaysDesc: '',
-        rawDays: diffDays
-      });
+    if (payrollType === 'monthly') {
+      // Monthly calendar split
+      while (curr.getTime() <= workingEnd.getTime() && loopGuard < 36) {
+        loopGuard++;
+        const year = curr.getFullYear();
+        const month = curr.getMonth();
+        const lastDayOfMonth = new Date(year, month + 1, 0, 12, 0, 0, 0);
+        const chunkEnd = workingEnd.getTime() < lastDayOfMonth.getTime() ? new Date(workingEnd) : lastDayOfMonth;
 
-      curr = addDays(chunkEnd, 1);
+        const diffDays = Math.round((chunkEnd.getTime() - curr.getTime()) / 86400000) + 1;
+        workingRows.push({
+          payRateFormatted,
+          client, rank, vessel, flagState, vesselType,
+          startDate: formatShortUK(curr),
+          endDate: formatShortUK(chunkEnd),
+          description: `${diffDays} Day${diffDays > 1 ? 's' : ''}`,
+          chargeRateFormatted,
+          periodLabel: formatShortMonthYear(curr),
+          paydayDaysDesc: '',
+          rawDays: diffDays
+        });
+
+        curr = addDays(chunkEnd, 1);
+      }
+    } else {
+      // Fortnightly hitch split aligned with 14-day payroll schedule
+      if (paydaySplits && paydaySplits.length > 0) {
+        paydaySplits.forEach((sp) => {
+          const spStart = new Date(Math.max(sp.periodStart.getTime(), currentStart.getTime()));
+          const spEnd = new Date(Math.min(sp.periodEnd.getTime(), workingEnd.getTime()));
+          if (spStart.getTime() <= spEnd.getTime()) {
+            const diffDays = Math.round((spEnd.getTime() - spStart.getTime()) / 86400000) + 1;
+            workingRows.push({
+              payRateFormatted,
+              client, rank, vessel, flagState, vesselType,
+              startDate: formatShortUK(spStart),
+              endDate: formatShortUK(spEnd),
+              description: `${diffDays} Day${diffDays > 1 ? 's' : ''}`,
+              chargeRateFormatted,
+              periodLabel: sp.periodLabel || '',
+              paydayDaysDesc: '',
+              rawDays: diffDays
+            });
+          }
+        });
+      } else {
+        // Fallback single block if splits not yet populated
+        const diffDays = Math.round((workingEnd.getTime() - currentStart.getTime()) / 86400000) + 1;
+        workingRows.push({
+          payRateFormatted,
+          client, rank, vessel, flagState, vesselType,
+          startDate: formatShortUK(currentStart),
+          endDate: formatShortUK(workingEnd),
+          description: `${diffDays} Day${diffDays > 1 ? 's' : ''}`,
+          chargeRateFormatted,
+          periodLabel: '',
+          paydayDaysDesc: '',
+          rawDays: diffDays
+        });
+      }
     }
   }
 
-  // Map Paydays info side-by-side with working rows
+  // Populate side-by-side Paydays info
   workingRows.forEach((r, idx) => {
     if (paydaySplits && paydaySplits[idx]) {
       const pDays = paydaySplits[idx].days;
-      const formattedPDays = pDays % 1 === 0 ? pDays.toString() : pDays.toFixed(1);
-      r.paydayDaysDesc = `${formattedPDays} Days`;
-      if (!r.periodMonth && paydaySplits[idx].periodStart) {
-        r.periodMonth = formatShortMonthYear(paydaySplits[idx].periodStart);
+      r.paydayDaysDesc = pDays > 0 ? `${pDays % 1 === 0 ? pDays.toString() : pDays.toFixed(1)} Days` : 'TBC';
+      if (!r.periodLabel) {
+        r.periodLabel = payrollType === 'fortnightly' 
+          ? (paydaySplits[idx].periodLabel || '') 
+          : formatShortMonthYear(paydaySplits[idx].periodStart);
       }
     }
     rows.push(r);
@@ -498,7 +546,7 @@ function generateMonthlyTripBreakdown(
       endDate: formatShortUK(travelEndDate),
       description: formatDayDesc(eVal, true),
       chargeRateFormatted,
-      periodMonth: '',
+      periodLabel: '',
       paydayDaysDesc: '',
       rawDays: eVal
     });
@@ -617,7 +665,6 @@ const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPre
   refFlexibility: '', refInitiative: '', refSafety: '', refSecurity: '', refTimeKeeping: '',
   refCommunication: '', refRelationships: '', refOverall: '', refDrugsPolicy: '', refReHire: '', refComments: '', displayCurrency: 'original',
 
-  // Clean empty defaults for Trip Breakdown tab
   tbClient: '',
   tbRank: '',
   tbVessel: '',
@@ -682,7 +729,7 @@ const useStore = create<AppState>()(
       })
     }),
     { 
-      name: 'maritime-hq-v14', 
+      name: 'maritime-hq-v15', 
       merge: (persistedState: any, currentState) => {
         return { ...currentState, ...persistedState, savedPresets: persistedState?.savedPresets || {} };
       }
@@ -925,7 +972,7 @@ export default function CalculatorPage() {
   useEffect(() => {
     if (!s || !s.updateField || !s.taxYear || !FISCAL_PROFILES[s.taxYear]) {
       console.error("Corrupted state detected. Resetting to defaults.");
-      localStorage.removeItem('maritime-hq-v14');
+      localStorage.removeItem('maritime-hq-v15');
       window.location.reload();
     }
   }, [s]);
@@ -1047,9 +1094,10 @@ export default function CalculatorPage() {
 
   // ─── Trip Breakdown Logic ───
   const tripBreakdown = useMemo(() => {
-    return generateMonthlyTripBreakdown(
+    return generateTripBreakdown(
       s.tbStartDate,
       s.tbEndDate,
+      s.pdPayrollType,
       s.tbClient || '-',
       s.tbRank || '-',
       s.tbVessel || '-',
@@ -1065,7 +1113,7 @@ export default function CalculatorPage() {
       s.cCurrency,
       paydays.splits
     );
-  }, [s.tbStartDate, s.tbEndDate, s.tbClient, s.tbRank, s.tbVessel, s.tbFlagState, s.tbVesselType, s.tbStartMode, s.tbStartCustomVal, s.tbEndMode, s.tbEndCustomVal, s.tbDayRate, s.tbMargin, s.feeType, s.cCurrency, paydays.splits]);
+  }, [s.tbStartDate, s.tbEndDate, s.pdPayrollType, s.tbClient, s.tbRank, s.tbVessel, s.tbFlagState, s.tbVesselType, s.tbStartMode, s.tbStartCustomVal, s.tbEndMode, s.tbEndCustomVal, s.tbDayRate, s.tbMargin, s.feeType, s.cCurrency, paydays.splits]);
 
   // ─── Export Functions ───
   const downloadCSV = (filename: string, headers: string, rows: string) => {
@@ -1105,9 +1153,9 @@ export default function CalculatorPage() {
     if (!tripBreakdown.rows.length) return;
     const headers = s.tbExcludeHeadersOnCopy 
       ? "" 
-      : "Pay Rate,Client,Rank,Vessel,Flag State,Vessel Type,Start Date,End Date,Days,Charge Rate,Period Month,Payday Days\n";
+      : "Pay Rate,Client,Rank,Vessel,Flag State,Vessel Type,Start Date,End Date,Days,Charge Rate,Period,Payday Days\n";
     const rows = tripBreakdown.rows.map(r => 
-      `"${r.payRateFormatted}","${r.client}","${r.rank}","${r.vessel}","${r.flagState}","${r.vesselType}","${r.startDate}","${r.endDate}","${r.description}","${r.chargeRateFormatted}","${r.periodMonth}","${r.paydayDaysDesc}"`
+      `"${r.payRateFormatted}","${r.client}","${r.rank}","${r.vessel}","${r.flagState}","${r.vesselType}","${r.startDate}","${r.endDate}","${r.description}","${r.chargeRateFormatted}","${r.periodLabel}","${r.paydayDaysDesc}"`
     ).join("\n");
     downloadCSV(`trip_breakdown_${s.tbStartDate || 'start'}_to_${s.tbEndDate || 'end'}.csv`, headers, rows);
   };
@@ -1116,10 +1164,10 @@ export default function CalculatorPage() {
     if (!tripBreakdown.rows.length) return;
     let tsv = s.tbExcludeHeadersOnCopy 
       ? "" 
-      : "Pay Rate\tClient\tRank\tVessel\tFlag State\tType\tStart\tEnd\tDays\tCharge Rate\tMonth\tPayday Days\n";
+      : "Pay Rate\tClient\tRank\tVessel\tFlag State\tType\tStart\tEnd\tDays\tCharge Rate\tPeriod\tPayday Days\n";
 
     tripBreakdown.rows.forEach(r => {
-      tsv += `${r.payRateFormatted}\t${r.client}\t${r.rank}\t${r.vessel}\t${r.flagState}\t${r.vesselType}\t${r.startDate}\t${r.endDate}\t${r.description}\t\t${r.chargeRateFormatted}\t\t${r.periodMonth}\t${r.paydayDaysDesc}\n`;
+      tsv += `${r.payRateFormatted}\t${r.client}\t${r.rank}\t${r.vessel}\t${r.flagState}\t${r.vesselType}\t${r.startDate}\t${r.endDate}\t${r.description}\t\t${r.chargeRateFormatted}\t\t${r.periodLabel}\t${r.paydayDaysDesc}\n`;
     });
     copyText(tsv.trim()).then(ok => showToast(ok ? `Trip breakdown copied ${s.tbExcludeHeadersOnCopy ? '(without headers)' : '(with headers)'}` : 'Clipboard access denied.'));
   };
@@ -1221,7 +1269,7 @@ export default function CalculatorPage() {
     text += `-----------------------------------\n\n`;
 
     paydays.splits.forEach(sp => {
-      text += `${s.pdPayrollType === 'fortnightly' ? sp.periodLabel : `${formatUK(sp.periodStart)} – ${formatUK(sp.periodEnd)}`}\n`;
+      text += `${s.pdPayrollType === 'fortnightly' ? `Payroll Period ${sp.periodLabel}` : `${formatUK(sp.periodStart)} – ${formatUK(sp.periodEnd)}`}\n`;
       text += `Cut-off: ${formatUK(sp.cutoff)} | Payday: ${formatUK(sp.payday)}\n`;
       text += `Payable Days: ${sp.days % 1 === 0 ? sp.days.toFixed(0) : formatNumber(sp.days)}`;
 
@@ -1652,7 +1700,7 @@ export default function CalculatorPage() {
                         </div>
                       </div>
                       <div className="space-y-4">
-                        <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-800 p-4 rounded-xl space-y-2">
+                        <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 p-4 rounded-xl space-y-2">
                           <div className="flex items-center justify-between font-bold text-slate-900 dark:text-slate-50">
                             <span>Days Onboard</span>
                             <span className="font-mono">{formatCurrencyIn(contract.crewTripWorkingTotal, s.cCurrency)}</span>
@@ -1838,6 +1886,16 @@ export default function CalculatorPage() {
                 <CollapsibleCard title="Hitch Parameters" icon={CalendarRange} defaultOpen>
                   <div className="space-y-4">
                     <div className="space-y-2">
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Payroll Type</label>
+                      <SegmentedControl 
+                        value={s.pdPayrollType} 
+                        onChange={(v: string) => s.updateField('pdPayrollType', v as 'monthly' | 'fortnightly')} 
+                        options={[{label: 'Monthly', value: 'monthly'}, {label: 'Fortnightly', value: 'fortnightly'}]} 
+                        ariaLabel="Trip Payroll Type" 
+                      />
+                    </div>
+
+                    <div className="space-y-2">
                       <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Client / Company</label>
                       <TextInput value={s.tbClient} onChange={(v: string) => s.updateField('tbClient', v)} placeholder="e.g. Seamariner Limited" />
                     </div>
@@ -1937,7 +1995,9 @@ export default function CalculatorPage() {
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                     <div>
                       <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">Trip Schedule Breakdown</h2>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">Month-by-month itinerary with synced paydays and charge rates</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">
+                        {s.pdPayrollType === 'monthly' ? 'Monthly hitch splits with calendar-month grouping' : 'Fortnightly hitch splits mapped to 14-day payroll cycles'}
+                      </p>
                     </div>
                     {tripBreakdown.rows.length > 0 && (
                       <div className="flex flex-wrap items-center gap-3 print:hidden">
@@ -1969,7 +2029,7 @@ export default function CalculatorPage() {
                       </div>
                       <h3 className="text-xl font-bold mb-2 text-slate-900 dark:text-slate-50">Select Dates</h3>
                       <p className="text-slate-500 dark:text-slate-400 font-medium max-w-sm">
-                        Enter trip start and finish dates to automatically generate monthly split rows.
+                        Enter trip start and finish dates to automatically generate hitch breakdown rows.
                       </p>
                     </div>
                   ) : (
@@ -1987,7 +2047,7 @@ export default function CalculatorPage() {
                             <th className="py-3 px-3">End</th>
                             <th className="py-3 px-3">Days</th>
                             <th className="py-3 px-3">Charge Rate</th>
-                            <th className="py-3 px-3">Month</th>
+                            <th className="py-3 px-3">{s.pdPayrollType === 'fortnightly' ? 'Period' : 'Month'}</th>
                             <th className="py-3 px-3 text-right">Payday Days</th>
                           </tr>
                         </thead>
@@ -2004,7 +2064,7 @@ export default function CalculatorPage() {
                               <td className="py-3 px-3 font-mono tabular-nums">{row.endDate}</td>
                               <td className="py-3 px-3 font-mono font-bold text-cyan-600 dark:text-cyan-400 print:text-black tabular-nums">{row.description}</td>
                               <td className="py-3 px-3 font-mono font-bold">{row.chargeRateFormatted || '-'}</td>
-                              <td className="py-3 px-3 font-mono text-slate-500 dark:text-slate-400">{row.periodMonth || '-'}</td>
+                              <td className="py-3 px-3 font-mono font-bold text-slate-600 dark:text-slate-300">{row.periodLabel || '-'}</td>
                               <td className="py-3 px-3 font-mono font-bold text-right text-emerald-600 dark:text-emerald-400 print:text-black tabular-nums">{row.paydayDaysDesc || '-'}</td>
                             </tr>
                           ))}
@@ -2181,7 +2241,7 @@ export default function CalculatorPage() {
                             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-700/50 print:border-gray-200">
                               <div className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-2">
                                 {s.pdPayrollType === 'fortnightly' ? (
-                                  <span className="text-sm font-bold text-slate-900 dark:text-slate-50 print:text-black">{split.periodLabel}</span>
+                                  <span className="text-sm font-bold text-slate-900 dark:text-slate-50 print:text-black">Payroll Period {split.periodLabel}</span>
                                 ) : (
                                   <span className="text-xs font-medium text-slate-500 dark:text-slate-400 print:text-gray-500">{formatUK(split.periodStart)} – {formatUK(split.periodEnd)}</span>
                                 )}
