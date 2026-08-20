@@ -438,7 +438,7 @@ function generateTripBreakdown(
     const cFee = isTravel ? contractData.cTravelManagementFee : contractData.cManagementFee;
     const marginLabel = contractData.feeType === 'percentage' ? `${contractData.cMarginVal}%` : 'Fixed';
 
-    return `Charge Rate:\n\n${formatCurrencyIn(cRate, currency)} Consolidated Rate\n${formatCurrencyIn(cContrib, currency)} Employers NIC\n${formatCurrencyIn(cSub, currency)} Subsistence\n${formatCurrencyIn(cTravelAllow, currency)} Travel Allowance\n${formatCurrencyIn(cOther, currency)} Other\n${formatCurrencyIn(cFee, currency)} Management Fee (${marginLabel})`;
+    return `Charge Rate:\n\n${formatCurrencyIn(cRate, currency)} Consolidated Rate\n${formatCurrencyIn(cContrib, currency)} Employer Contributions\n${formatCurrencyIn(cSub, currency)} Subsistence\n${formatCurrencyIn(cTravelAllow, currency)} Travel Allowance\n${formatCurrencyIn(cOther, currency)} Other\n${formatCurrencyIn(cFee, currency)} Management Fee (${marginLabel})`;
   };
 
   // 1. Initial Travel Day
@@ -1178,7 +1178,7 @@ export default function CalculatorPage() {
   // Pure TSV Clipboard Export: Column A = empty, B = Pay, C = Client, D = Rank, E = Vessel, F = Flag, G = Type, H = Start, I = End, J = Days, K = empty, L = empty, M = empty, N = Charge Rate, O = empty, P = empty, Q = Period, R = Paydays
   const copyTripBreakdownSummary = () => {
     if (!tripBreakdown.rows.length) return;
-
+    
     let tsv = "";
     if (!s.tbExcludeHeadersOnCopy) {
       tsv += "\tPay Rate\tClient\tRank\tVessel Name\tFlag State\tVessel Type\tStart Date\tEnd Date\tDays\t\t\t\tCharge Rate\t\t\tPeriod\tPaydays\n";
@@ -1187,7 +1187,7 @@ export default function CalculatorPage() {
     tripBreakdown.rows.forEach(r => {
       tsv += `\t${r.payRateFormatted}\t${r.client}\t${r.rank}\t${r.vessel}\t${r.flagState}\t${r.vesselType}\t${r.startDate}\t${r.endDate}\t${r.description}\t\t\t\t${r.chargeRateFormatted}\t\t\t${r.periodLabel}\t${r.paydayDaysDesc}\n`;
     });
-
+    
     copyText(tsv.trimEnd()).then(ok => showToast(ok ? `Trip breakdown copied ${s.tbExcludeHeadersOnCopy ? '(without headers)' : '(with headers)'}` : 'Clipboard access denied.'));
   };
 
