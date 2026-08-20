@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * MARITIME FEE & CONTRACT CALCULATOR (Enterprise Grade - Version 33.0)
+ * MARITIME FEE & CONTRACT CALCULATOR (Enterprise Grade - Version 37.0)
  * ============================================================================
  * 
  * ARCHITECTURE OVERVIEW:
@@ -121,6 +121,7 @@ export interface TripBreakdownRow {
   rawDays: number;
   isTravel: boolean;
   rateNote: string;
+  isBlankRow?: boolean;
 }
 
 /** Array of currencies supported throughout the application */
@@ -211,7 +212,7 @@ const sundayBefore = (date: Date) => addDays(date, -(date.getDay() === 0 ? 7 : d
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const FN_ANCHOR = new Date(2026, 0, 9, 12, 0, 0, 0);
 
-/** Robust clipboard write handler with fallback safety */
+/** Basic text clipboard fallback */
 async function copyText(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard && window.isSecureContext) {
@@ -423,7 +424,6 @@ function calculateRawPaydays(params: PaydayParams, bankHolidays: Set<string>) {
   }
 }
 
-/** Generates chronological trip and hitch breakdown schedules mapped to payroll intervals */
 function generateTripBreakdown(
   startDateStr: string,
   endDateStr: string,
@@ -445,7 +445,8 @@ function generateTripBreakdown(
   contractData: any,
   subRateStr: string,
   includeSub: boolean,
-  onlyTravelSubsistence: boolean
+  onlyTravelSubsistence: boolean,
+  subInDayRate: boolean
 ): { rows: TripBreakdownRow[]; error: string | null } {
   if (!startDateStr || !endDateStr) return { rows: [], error: null };
   const overallStart = parseDate(startDateStr);
@@ -455,15 +456,11 @@ function generateTripBreakdown(
     return { rows: [], error: 'End date cannot be prior to start date.' };
   }
 
-  const rows: TripBreakdownRow[] = [];
+  const mainRows: TripBreakdownRow[] = [];
 
   const payRateNum = Math.max(0, parseFloat(dayRateStr) || 0);
   const marginNum = Math.max(0, parseFloat(marginStr) || 0);
-  const chargeRateNum = feeType === 'percentage' ? payRateNum * (1 + marginNum / 100) : payRateNum + marginNum;
   const baseSubRate = includeSub ? Math.max(0, parseFloat(subRateStr) || 0) : 0;
-
-  const payRateFormatted = payRateNum > 0 ? formatCurrencyIn(payRateNum, currency) : '';
-  const chargeRateFormatted = chargeRateNum > 0 ? formatCurrencyIn(chargeRateNum, currency) : '';
 
   const getDayValue = (mode: DayRateMode, customVal: string): number => {
     if (mode === 'half') return 0.5;
@@ -474,41 +471,59 @@ function generateTripBreakdown(
 
   const formatDayDesc = (val: number, isTravel = true): string => {
     const formatted = val % 1 === 0 ? val.toString() : val.toFixed(1);
-    return isTravel ? `${formatted} Day Travel` : `${formatted} Days`;
+    return isTravel ? `${formatted} Days (Travel)` : `${formatted} Days`;
   };
 
-  const buildNote = (isTravel: boolean): string => {
+  const getRates = (isTravel: boolean) => {
+     const appliesToSub = includeSub && (isTravel || !onlyTravelSubsistence);
+     const effectivePay = payRateNum + (appliesToSub && subInDayRate ? baseSubRate : 0);
+     const charge = feeType === 'percentage' ? effectivePay * (1 + marginNum / 100) : effectivePay + marginNum;
+     return {
+        payStr: effectivePay > 0 ? formatCurrencyIn(effectivePay, currency) : '',
+        chargeStr: charge > 0 ? formatCurrencyIn(charge, currency) : ''
+     };
+  };
+
+  const buildNote = (isTravel: boolean, appliesToSub: boolean) => {
     const cRate = isTravel ? contractData.cTravelRate : contractData.cRate;
     const cContrib = isTravel 
       ? (contractData.cTravelPension + contractData.cTravelAppyLevy + contractData.cTravelNI) 
       : (contractData.cPension + contractData.cAppyLevy + contractData.cEmployerNI);
-    const cSub = isTravel ? contractData.cSubTravelAmt : contractData.cSubOnboardAmt;
+
+    const cSub = (appliesToSub && subInDayRate) ? baseSubRate : 0;
     const cTravelAllow = 0;
     const cOther = isTravel ? contractData.cTravelContingency : contractData.cContingency;
-    const cFee = isTravel ? contractData.cTravelManagementFee : contractData.cManagementFee;
-    const marginLabel = contractData.feeType === 'percentage' ? `${contractData.cMarginVal}%` : 'Fixed';
 
-    return `Charge Rate:\n\n${formatCurrencyIn(cRate, currency)} Consolidated Rate\n${formatCurrencyIn(cContrib, currency)} Employer Contributions\n${formatCurrencyIn(cSub, currency)} Subsistence\n${formatCurrencyIn(cTravelAllow, currency)} Travel Allowance\n${formatCurrencyIn(cOther, currency)} Other\n${formatCurrencyIn(cFee, currency)} Management Fee (${marginLabel})`;
+    const baseForFee = payRateNum + cContrib + cSub + cOther;
+    const cFee = feeType === 'percentage' ? baseForFee * (marginNum / 100) : marginNum;
+    const marginLabel = feeType === 'percentage' ? `${marginNum}%` : 'Fixed';
+
+    return `Charge Rate:\n\n${formatCurrencyIn(payRateNum, currency)} Consolidated Rate\n${formatCurrencyIn(cContrib, currency)} Employer Contributions\n${formatCurrencyIn(cSub, currency)} Subsistence\n${formatCurrencyIn(cTravelAllow, currency)} Travel Allowance\n${formatCurrencyIn(cOther, currency)} Other\n${formatCurrencyIn(cFee, currency)} Management Fee (${marginLabel})`;
   };
+
+  let totalSeparateSubDays = 0;
 
   // 1. Initial Travel Day
   let currentStart = new Date(overallStart);
   if (startMode !== 'none') {
     const sVal = getDayValue(startMode, startCustomVal);
-    rows.push({
-      payRateFormatted,
+    const rates = getRates(true);
+
+    mainRows.push({
+      payRateFormatted: rates.payStr,
       client, rank, vessel, flagState, vesselType,
       startDate: formatShortUK(currentStart),
       endDate: formatShortUK(currentStart),
       description: formatDayDesc(sVal, true),
-      chargeRateFormatted,
-      periodLabel: '',
-      paydayDaysDesc: '',
-      subsistenceFormatted: '-',
-      rawDays: sVal,
-      isTravel: true,
-      rateNote: buildNote(true)
+      chargeRateFormatted: rates.chargeStr,
+      periodLabel: '', paydayDaysDesc: '', subsistenceFormatted: '', rawDays: sVal, isTravel: true,
+      rateNote: buildNote(true, true)
     });
+
+    if (includeSub && !subInDayRate) {
+      totalSeparateSubDays += 1;
+    }
+
     currentStart = addDays(currentStart, 1);
   }
 
@@ -526,6 +541,8 @@ function generateTripBreakdown(
   if (currentStart.getTime() <= workingEnd.getTime()) {
     let curr = new Date(currentStart);
     let loopGuard = 0;
+    const isWorkingTravel = false;
+    const rates = getRates(isWorkingTravel);
 
     if (payrollType === 'monthly') {
       while (curr.getTime() <= workingEnd.getTime() && loopGuard < 36) {
@@ -534,21 +551,18 @@ function generateTripBreakdown(
         const month = curr.getMonth();
         const lastDayOfMonth = new Date(year, month + 1, 0, 12, 0, 0, 0);
         const chunkEnd = workingEnd.getTime() < lastDayOfMonth.getTime() ? new Date(workingEnd) : lastDayOfMonth;
-
         const diffDays = Math.round((chunkEnd.getTime() - curr.getTime()) / 86400000) + 1;
-        rows.push({
-          payRateFormatted,
+
+        mainRows.push({
+          payRateFormatted: rates.payStr,
           client, rank, vessel, flagState, vesselType,
           startDate: formatShortUK(curr),
           endDate: formatShortUK(chunkEnd),
           description: `${diffDays} Days`,
-          chargeRateFormatted,
-          periodLabel: '',
-          paydayDaysDesc: '',
-          subsistenceFormatted: '-',
-          rawDays: diffDays,
-          isTravel: false,
-          rateNote: buildNote(false)
+          chargeRateFormatted: rates.chargeStr,
+          periodLabel: formatShortMonthYear(curr),
+          paydayDaysDesc: '', subsistenceFormatted: '', rawDays: diffDays, isTravel: false,
+          rateNote: buildNote(false, !onlyTravelSubsistence)
         });
 
         curr = addDays(chunkEnd, 1);
@@ -560,81 +574,107 @@ function generateTripBreakdown(
           const spEnd = new Date(Math.min(sp.periodEnd.getTime(), workingEnd.getTime()));
           if (spStart.getTime() <= spEnd.getTime()) {
             const diffDays = Math.round((spEnd.getTime() - spStart.getTime()) / 86400000) + 1;
-            rows.push({
-              payRateFormatted,
+
+            mainRows.push({
+              payRateFormatted: rates.payStr,
               client, rank, vessel, flagState, vesselType,
               startDate: formatShortUK(spStart),
               endDate: formatShortUK(spEnd),
               description: `${diffDays} Days`,
-              chargeRateFormatted,
-              periodLabel: '',
-              paydayDaysDesc: '',
-              subsistenceFormatted: '-',
-              rawDays: diffDays,
-              isTravel: false,
-              rateNote: buildNote(false)
+              chargeRateFormatted: rates.chargeStr,
+              periodLabel: sp.periodLabel || '',
+              paydayDaysDesc: '', subsistenceFormatted: '', rawDays: diffDays, isTravel: false,
+              rateNote: buildNote(false, !onlyTravelSubsistence)
             });
           }
         });
       } else {
         const diffDays = Math.round((workingEnd.getTime() - currentStart.getTime()) / 86400000) + 1;
-        rows.push({
-          payRateFormatted,
+        mainRows.push({
+          payRateFormatted: rates.payStr,
           client, rank, vessel, flagState, vesselType,
           startDate: formatShortUK(currentStart),
           endDate: formatShortUK(workingEnd),
           description: `${diffDays} Days`,
-          chargeRateFormatted,
-          periodLabel: '',
-          paydayDaysDesc: '',
-          subsistenceFormatted: '-',
-          rawDays: diffDays,
-          isTravel: false,
-          rateNote: buildNote(false)
+          chargeRateFormatted: rates.chargeStr,
+          periodLabel: '', paydayDaysDesc: '', subsistenceFormatted: '', rawDays: diffDays, isTravel: false,
+          rateNote: buildNote(false, !onlyTravelSubsistence)
         });
       }
+    }
+
+    if (includeSub && !subInDayRate && !onlyTravelSubsistence) {
+      const totalWorkingDays = Math.round((workingEnd.getTime() - currentStart.getTime()) / 86400000) + 1;
+      totalSeparateSubDays += totalWorkingDays;
     }
   }
 
   // 4. Final Travel Day
   if (endMode !== 'none' && travelEndDate) {
     const eVal = getDayValue(endMode, endCustomVal);
-    rows.push({
-      payRateFormatted,
+    const rates = getRates(true);
+
+    mainRows.push({
+      payRateFormatted: rates.payStr,
       client, rank, vessel, flagState, vesselType,
       startDate: formatShortUK(travelEndDate),
       endDate: formatShortUK(travelEndDate),
       description: formatDayDesc(eVal, true),
-      chargeRateFormatted,
-      periodLabel: '',
-      paydayDaysDesc: '',
-      subsistenceFormatted: '-',
-      rawDays: eVal,
-      isTravel: true,
-      rateNote: buildNote(true)
+      chargeRateFormatted: rates.chargeStr,
+      periodLabel: '', paydayDaysDesc: '', subsistenceFormatted: '', rawDays: eVal, isTravel: true,
+      rateNote: buildNote(true, true)
     });
+
+    if (includeSub && !subInDayRate) {
+      totalSeparateSubDays += 1;
+    }
   }
 
-  // 5. Shift Paydays column up and multiply strictly by Paydays count for each respective period row
+  // 5. Shift Paydays column up by one row & split subsistence side-by-side next to each payday interval
   if (paydaySplits && paydaySplits.length > 0) {
     paydaySplits.forEach((sp, pIdx) => {
-      if (rows[pIdx]) {
+      if (mainRows[pIdx]) {
         const pDays = sp.days;
-        rows[pIdx].paydayDaysDesc = pDays > 0 ? `${pDays % 1 === 0 ? pDays.toString() : pDays.toFixed(1)} Days` : 'TBC';
-        rows[pIdx].periodLabel = payrollType === 'fortnightly' 
+        mainRows[pIdx].paydayDaysDesc = pDays > 0 ? `${pDays % 1 === 0 ? pDays.toString() : pDays.toFixed(1)} Days` : 'TBC';
+        mainRows[pIdx].periodLabel = payrollType === 'fortnightly' 
           ? (sp.periodLabel || '') 
           : (sp.payday ? formatShortMonthYear(sp.payday) : '');
 
-        if (baseSubRate > 0 && !onlyTravelSubsistence && pDays > 0) {
-          rows[pIdx].subsistenceFormatted = formatCurrencyIn(pDays * baseSubRate, currency);
+        if (includeSub && baseSubRate > 0 && pDays > 0) {
+          mainRows[pIdx].subsistenceFormatted = formatCurrencyIn(pDays * baseSubRate, currency);
         } else {
-          rows[pIdx].subsistenceFormatted = '-';
+          mainRows[pIdx].subsistenceFormatted = '';
         }
       }
     });
   }
 
-  return { rows, error: null };
+  const finalRows = [...mainRows];
+
+  // 6. Generate single consolidated subsistence line if separated
+  if (includeSub && !subInDayRate && totalSeparateSubDays > 0) {
+    finalRows.push({ isBlankRow: true } as TripBreakdownRow);
+    finalRows.push({
+      payRateFormatted: formatCurrencyIn(baseSubRate, currency),
+      client,
+      rank: 'Subsistence',
+      vessel: '',
+      flagState: '',
+      vesselType: '',
+      startDate: formatShortUK(overallStart),
+      endDate: formatShortUK(overallEnd),
+      description: `${totalSeparateSubDays} Days`,
+      chargeRateFormatted: formatCurrencyIn(baseSubRate, currency),
+      periodLabel: '',
+      paydayDaysDesc: '',
+      subsistenceFormatted: '',
+      rawDays: totalSeparateSubDays,
+      isTravel: false,
+      rateNote: ''
+    });
+  }
+
+  return { rows: finalRows, error: null };
 }
 
 // ─── 3. GLOBAL ZUSTAND STORE ──────────────────────────────────────────────────
@@ -728,6 +768,7 @@ interface AppState {
   tbSubsistenceRate: string;
   tbIncludeSubsistence: boolean;
   tbOnlyTravelSubsistence: boolean;
+  tbSubsistenceInDayRate: boolean;
   tbExcludeHeadersOnCopy: boolean;
   tbShowContractBreakdown: boolean;
 
@@ -769,6 +810,7 @@ const defaultState: Omit<AppState, 'updateField' | 'resetToDefaults' | 'savedPre
   tbSubsistenceRate: '',
   tbIncludeSubsistence: false,
   tbOnlyTravelSubsistence: false,
+  tbSubsistenceInDayRate: false,
   tbExcludeHeadersOnCopy: false,
   tbShowContractBreakdown: true
 };
@@ -822,6 +864,12 @@ const useStore = create<AppState>()(
             updates.tbIncludeSubsistence = value as boolean;
           }
 
+          if (field === 'tbSubsistenceInDayRate') {
+             updates.subsistenceInFee = value as boolean;
+          } else if (field === 'subsistenceInFee') {
+             updates.tbSubsistenceInDayRate = value as boolean;
+          }
+
           return updates;
         });
       },
@@ -833,7 +881,7 @@ const useStore = create<AppState>()(
       })
     }),
     { 
-      name: 'maritime-hq-v34', 
+      name: 'maritime-hq-v38', 
       merge: (persistedState: any, currentState) => {
         return { ...currentState, ...persistedState, savedPresets: persistedState?.savedPresets || {} };
       }
@@ -1209,11 +1257,12 @@ export default function CalculatorPage() {
       contract,
       s.tbSubsistenceRate,
       s.tbIncludeSubsistence,
-      s.tbOnlyTravelSubsistence
+      s.tbOnlyTravelSubsistence,
+      s.tbSubsistenceInDayRate
     );
-  }, [s.tbStartDate, s.tbEndDate, s.pdPayrollType, s.tbClient, s.tbRank, s.tbVessel, s.tbFlagState, s.tbVesselType, s.tbStartMode, s.tbStartCustomVal, s.tbEndMode, s.tbEndCustomVal, s.tbDayRate, s.tbMargin, s.feeType, s.cCurrency, paydays.splits, contract, s.tbSubsistenceRate, s.tbIncludeSubsistence, s.tbOnlyTravelSubsistence]);
+  }, [s.tbStartDate, s.tbEndDate, s.pdPayrollType, s.tbClient, s.tbRank, s.tbVessel, s.tbFlagState, s.tbVesselType, s.tbStartMode, s.tbStartCustomVal, s.tbEndMode, s.tbEndCustomVal, s.tbDayRate, s.tbMargin, s.feeType, s.cCurrency, paydays.splits, contract, s.tbSubsistenceRate, s.tbIncludeSubsistence, s.tbOnlyTravelSubsistence, s.tbSubsistenceInDayRate]);
 
-  // ─── Export & Clipboard Functions ───
+  // ─── Export Functions ───
   const downloadCSV = (filename: string, headers: string, rows: string) => {
     const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
@@ -1247,17 +1296,22 @@ export default function CalculatorPage() {
     downloadCSV('perm_breakdown.csv', headers, rows);
   };
 
+  // CSV Export strictly mapped to Excel columns: B, C, D, E, F, G, H, I, J, N, Q, R, S (Subsistence to the right of Paydays R)
   const exportTripBreakdownCSV = () => {
     if (!tripBreakdown.rows.length) return;
     const headers = s.tbExcludeHeadersOnCopy 
       ? "" 
       : "Col A,Pay Rate (B),Client (C),Rank (D),Vessel Name (E),Flag State (F),Vessel Type (G),Start Date (H),End Date (I),Days (J),Col K,Col L,Col M,Charge Rate (N),Col O,Col P,Period (Q),Paydays (R),Subsistence (S)\n";
-    const rows = tripBreakdown.rows.map(r => 
-      `"","${r.payRateFormatted}","${r.client}","${r.rank}","${r.vessel}","${r.flagState}","${r.vesselType}","${r.startDate}","${r.endDate}","${r.description}","","","","${r.chargeRateFormatted}","","","${r.periodLabel}","${r.paydayDaysDesc}","${r.subsistenceFormatted}"`
-    ).join("\n");
+
+    const rows = tripBreakdown.rows.map(r => {
+      if (r.isBlankRow) return "";
+      return `"","${r.payRateFormatted}","${r.client}","${r.rank}","${r.vessel}","${r.flagState}","${r.vesselType}","${r.startDate}","${r.endDate}","${r.description}","","","","${r.chargeRateFormatted}","","","${r.periodLabel}","${r.paydayDaysDesc}","${r.subsistenceFormatted}"`;
+    }).join("\n");
+
     downloadCSV(`trip_breakdown_${s.tbStartDate || 'start'}_to_${s.tbEndDate || 'end'}.csv`, headers, rows);
   };
 
+  // TSV Clipboard Export: Column A = empty, B = Pay, C = Client, D = Rank, E = Vessel, F = Flag, G = Type, H = Start, I = End, J = Days, N = Charge Rate, Q = Period, R = Paydays, S = Subsistence
   const copyTripBreakdownSummary = () => {
     if (!tripBreakdown.rows.length) return;
 
@@ -1267,7 +1321,11 @@ export default function CalculatorPage() {
     }
 
     tripBreakdown.rows.forEach(r => {
-      tsv += `\t${r.payRateFormatted}\t${r.client}\t${r.rank}\t${r.vessel}\t${r.flagState}\t${r.vesselType}\t${r.startDate}\t${r.endDate}\t${r.description}\t\t\t\t${r.chargeRateFormatted}\t\t\t${r.periodLabel}\t${r.paydayDaysDesc}\t${r.subsistenceFormatted}\n`;
+      if (r.isBlankRow) {
+          tsv += `\n`;
+      } else {
+          tsv += `\t${r.payRateFormatted}\t${r.client}\t${r.rank}\t${r.vessel}\t${r.flagState}\t${r.vesselType}\t${r.startDate}\t${r.endDate}\t${r.description}\t\t\t\t${r.chargeRateFormatted}\t\t\t${r.periodLabel}\t${r.paydayDaysDesc}\t${r.subsistenceFormatted}\n`;
+      }
     });
 
     copyText(tsv.trimEnd()).then(ok => showToast(ok ? `Trip breakdown copied ${s.tbExcludeHeadersOnCopy ? '(without headers)' : '(with headers)'}` : 'Clipboard access denied.'));
@@ -1275,8 +1333,8 @@ export default function CalculatorPage() {
 
   const copyWorkingDayChargeNote = () => {
     if (!tripBreakdown.rows.length) return;
-    const workingRow = tripBreakdown.rows.find(r => !r.isTravel) || tripBreakdown.rows[0];
-    if (!workingRow) return;
+    const workingRow = tripBreakdown.rows.find(r => !r.isTravel && !r.isBlankRow) || tripBreakdown.rows[0];
+    if (!workingRow || !workingRow.rateNote) return;
     copyText(workingRow.rateNote).then(ok => showToast(ok ? 'Charge Rate note copied! (Right-Click in Excel -> New Note -> Ctrl+V)' : 'Clipboard access denied.'));
   };
 
@@ -1597,9 +1655,17 @@ export default function CalculatorPage() {
                             <label className="block text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Subsistence Rate ({curSym(s.cCurrency)} / day)</label>
                             <NumInput value={s.tbSubsistenceRate} onChange={(v: string) => s.updateField('tbSubsistenceRate', v)} prefix={curSym(s.cCurrency)} placeholder="0.00" />
                           </div>
-                          <div className="flex items-center justify-between pt-1">
-                            <label className="text-xs font-medium cursor-pointer text-slate-700 dark:text-slate-300" onClick={() => s.updateField('tbOnlyTravelSubsistence', !s.tbOnlyTravelSubsistence)}>Only travel days</label>
-                            <Switch checked={s.tbOnlyTravelSubsistence} onCheckedChange={(v: boolean) => s.updateField('tbOnlyTravelSubsistence', v)} className="scale-75 origin-right" />
+
+                          {/* Subsistence Logic Modifiers */}
+                          <div className="flex flex-col gap-2 pt-1 border-t border-slate-100 dark:border-slate-800">
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs font-medium cursor-pointer text-slate-700 dark:text-slate-300" onClick={() => s.updateField('tbOnlyTravelSubsistence', !s.tbOnlyTravelSubsistence)}>Only travel days</label>
+                              <Switch checked={s.tbOnlyTravelSubsistence} onCheckedChange={(v: boolean) => s.updateField('tbOnlyTravelSubsistence', v)} className="scale-75 origin-right" />
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs font-medium cursor-pointer text-slate-700 dark:text-slate-300" onClick={() => s.updateField('tbSubsistenceInDayRate', !s.tbSubsistenceInDayRate)}>Include in Day Rate</label>
+                              <Switch checked={s.tbSubsistenceInDayRate} onCheckedChange={(v: boolean) => s.updateField('tbSubsistenceInDayRate', v)} className="scale-75 origin-right" />
+                            </div>
                           </div>
                         </div>
                       </AnimatedSection>
@@ -1736,40 +1802,47 @@ export default function CalculatorPage() {
                             <th className="py-2.5 px-2.5">Charge (N)</th>
                             <th className="py-2.5 px-2.5">{s.pdPayrollType === 'fortnightly' ? 'Period (Q)' : 'Month (Q)'}</th>
                             <th className="py-2.5 px-2.5">Paydays (R)</th>
-                            <th className="py-2.5 px-2.5 text-right">Subsistence (S)</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 print:divide-gray-200">
-                          {tripBreakdown.rows.map((row, idx) => (
-                            <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors text-slate-900 dark:text-slate-200 print:text-black">
-                              <td className="py-2.5 px-2.5 font-mono font-bold whitespace-nowrap">{row.payRateFormatted || '-'}</td>
-                              <td className="py-2.5 px-2.5 font-semibold whitespace-nowrap">{row.client}</td>
-                              <td className="py-2.5 px-2.5 whitespace-nowrap">{row.rank}</td>
-                              <td className="py-2.5 px-2.5 whitespace-nowrap">{row.vessel}</td>
-                              <td className="py-2.5 px-2.5 whitespace-nowrap">{row.flagState}</td>
-                              <td className="py-2.5 px-2.5 whitespace-nowrap">{row.vesselType}</td>
-                              <td className="py-2.5 px-2.5 font-mono tabular-nums whitespace-nowrap">{row.startDate}</td>
-                              <td className="py-2.5 px-2.5 font-mono tabular-nums whitespace-nowrap">{row.endDate}</td>
-                              <td className="py-2.5 px-2.5 font-mono font-bold text-cyan-600 dark:text-cyan-400 print:text-black tabular-nums whitespace-nowrap">{row.description}</td>
-                              <td className="py-2.5 px-2.5 font-mono font-bold whitespace-nowrap relative group/note cursor-help" title={row.rateNote}>
-                                {row.chargeRateFormatted || '-'}
-                                {row.chargeRateFormatted && (
-                                  <span className="absolute -top-0.5 right-1 text-[9px] text-red-500 font-bold select-none pointer-events-none">▲</span>
-                                )}
-                              </td>
-                              <td className="py-2.5 px-2.5 font-mono font-bold text-slate-600 dark:text-slate-300 whitespace-nowrap">{row.periodLabel || '-'}</td>
-                              <td className="py-2.5 px-2.5 font-mono font-bold text-emerald-600 dark:text-emerald-400 print:text-black tabular-nums whitespace-nowrap">{row.paydayDaysDesc || '-'}</td>
-                              <td className="py-2.5 px-2.5 font-mono font-bold text-teal-600 dark:text-teal-400 text-right whitespace-nowrap">{row.subsistenceFormatted}</td>
-                            </tr>
-                          ))}
+                          {tripBreakdown.rows.map((row, idx) => {
+                            if (row.isBlankRow) {
+                              return (
+                                <tr key={`blank-${idx}`} className="h-6">
+                                  <td colSpan={12} className="bg-transparent border-t-2 border-slate-200 dark:border-slate-800"></td>
+                                </tr>
+                              );
+                            }
+                            return (
+                              <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors text-slate-900 dark:text-slate-200 print:text-black">
+                                <td className="py-2.5 px-2.5 font-mono font-bold whitespace-nowrap">{row.payRateFormatted || '-'}</td>
+                                <td className="py-2.5 px-2.5 font-semibold whitespace-nowrap">{row.client}</td>
+                                <td className="py-2.5 px-2.5 whitespace-nowrap">{row.rank}</td>
+                                <td className="py-2.5 px-2.5 whitespace-nowrap">{row.vessel}</td>
+                                <td className="py-2.5 px-2.5 whitespace-nowrap">{row.flagState}</td>
+                                <td className="py-2.5 px-2.5 whitespace-nowrap">{row.vesselType}</td>
+                                <td className="py-2.5 px-2.5 font-mono tabular-nums whitespace-nowrap">{row.startDate}</td>
+                                <td className="py-2.5 px-2.5 font-mono tabular-nums whitespace-nowrap">{row.endDate}</td>
+                                <td className="py-2.5 px-2.5 font-mono font-bold text-cyan-600 dark:text-cyan-400 print:text-black tabular-nums whitespace-nowrap">{row.description}</td>
+                                <td className="py-2.5 px-2.5 font-mono font-bold whitespace-nowrap relative group/note cursor-help" title={row.rateNote}>
+                                  {row.chargeRateFormatted || '-'}
+                                  {row.chargeRateFormatted && row.rateNote && (
+                                    <span className="absolute -top-0.5 right-1 text-[9px] text-red-500 font-bold select-none pointer-events-none">▲</span>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-2.5 font-mono font-bold text-slate-600 dark:text-slate-300 whitespace-nowrap">{row.periodLabel || '-'}</td>
+                                <td className="py-2.5 px-2.5 font-mono font-bold text-emerald-600 dark:text-emerald-400 print:text-black tabular-nums whitespace-nowrap">{row.paydayDaysDesc || '-'}</td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                         <tfoot>
                           <tr className="bg-slate-50 dark:bg-slate-800/30 font-bold text-slate-900 dark:text-slate-50 border-t-2 border-slate-200 dark:border-slate-800 print:border-gray-300 print:bg-transparent print:text-black">
                             <td colSpan={8} className="py-3 px-2.5 text-right text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 print:text-gray-600">Total:</td>
                             <td className="py-3 px-2.5 font-mono text-sm text-cyan-600 dark:text-cyan-400 print:text-black whitespace-nowrap">
-                              {tripBreakdown.rows.reduce((acc, r) => acc + r.rawDays, 0)} Days
+                              {tripBreakdown.rows.filter(r => !r.isBlankRow && r.rank !== 'Subsistence').reduce((acc, r) => acc + r.rawDays, 0)} Days
                             </td>
-                            <td colSpan={4} className="py-3 px-2.5 font-mono text-right text-sm text-emerald-600 dark:text-emerald-400 print:text-black whitespace-nowrap">
+                            <td colSpan={3} className="py-3 px-2.5 font-mono text-right text-sm text-emerald-600 dark:text-emerald-400 print:text-black whitespace-nowrap">
                               {paydays.totalDays ? `${paydays.totalDays} Payable Days` : ''}
                             </td>
                           </tr>
@@ -1847,12 +1920,12 @@ export default function CalculatorPage() {
 
                   <div className="space-y-3 pt-4 border-t border-slate-100 dark:border-slate-800 group">
                     <div className="flex items-center justify-between">
-                      <label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('pdIncludeSubsistence', !s.pdIncludeSubsistence)}>Include Subsistence</label>
-                      <Switch checked={s.pdIncludeSubsistence} onCheckedChange={(v: boolean) => s.updateField('pdIncludeSubsistence', v)} />
+                      <label className="text-sm font-bold cursor-pointer text-slate-900 dark:text-slate-50" onClick={() => s.updateField('tbIncludeSubsistence', !s.tbIncludeSubsistence)}>Include Subsistence</label>
+                      <Switch checked={s.tbIncludeSubsistence} onCheckedChange={(v: boolean) => s.updateField('tbIncludeSubsistence', v)} />
                     </div>
-                    <AnimatedSection show={s.pdIncludeSubsistence} className="pt-2">
+                    <AnimatedSection show={s.tbIncludeSubsistence} className="pt-2">
                       <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Subsistence Rate (£ per day)</label>
-                      <NumInput value={s.pdSubsistenceRate} onChange={(v: string) => s.updateField('pdSubsistenceRate', v)} prefix="£" />
+                      <NumInput value={s.tbSubsistenceRate} onChange={(v: string) => s.updateField('tbSubsistenceRate', v)} prefix="£" />
                     </AnimatedSection>
                   </div>
 
@@ -1875,7 +1948,7 @@ export default function CalculatorPage() {
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
                           <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Day Rate (£)</label>
-                          <NumInput value={s.pdDayRate} onChange={(v: string) => s.updateField('pdDayRate', v)} prefix="£" />
+                          <NumInput value={s.tbDayRate} onChange={(v: string) => s.updateField('tbDayRate', v)} prefix="£" />
                         </div>
                         <div className="space-y-2">
                           <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Advance Deduction (£)</label>
@@ -1931,15 +2004,15 @@ export default function CalculatorPage() {
                           <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-2 print:text-gray-500">{formatUK(parseDate(s.pdStartDate))} → {formatUK(parseDate(s.pdFinishDate))}</p>
                         )}
 
-                        {(s.pdIncludeSubsistence || s.pdIncludePay) && (
+                        {(s.tbIncludeSubsistence || s.pdIncludePay) && (
                           <div className="mt-6 pt-5 border-t border-slate-200 dark:border-slate-700 text-left space-y-2 print:border-gray-300">
                             {s.pdIncludePay && (
                               <div className="flex justify-between items-center text-sm">
-                                <span className="text-slate-600 dark:text-slate-300 font-medium print:text-gray-600">Gross Pay ({paydays.totalDays} × {formatCurrencyIn(parseFloat(s.pdDayRate) || 0, 'GBP')})</span>
+                                <span className="text-slate-600 dark:text-slate-300 font-medium print:text-gray-600">Gross Pay ({paydays.totalDays} × {formatCurrencyIn(parseFloat(s.tbDayRate) || 0, 'GBP')})</span>
                                 <span className="font-mono font-bold text-slate-900 dark:text-slate-50 print:text-black tabular-nums">{formatCurrencyIn(pdTotalGross, 'GBP')}</span>
                               </div>
                             )}
-                            {s.pdIncludeSubsistence && s.pdSubsistenceRate && (
+                            {s.tbIncludeSubsistence && s.tbSubsistenceRate && (
                               <div className="flex justify-between items-center text-sm">
                                 <span className="text-slate-600 dark:text-slate-300 font-medium print:text-gray-600">Subsistence ({paydays.totalSubDays}d)</span>
                                 <span className="font-mono font-bold text-slate-900 dark:text-slate-50 print:text-black tabular-nums">{formatCurrencyIn(paydays.totalSub || 0, 'GBP')}</span>
@@ -1988,15 +2061,15 @@ export default function CalculatorPage() {
                                 <p className="font-mono font-bold text-sm text-slate-900 dark:text-cyan-400 print:text-black tabular-nums">{formatUK(split.payday)}</p>
                               </div>
                             </div>
-                            {(s.pdIncludePay || s.pdIncludeSubsistence) && (
+                            {(s.pdIncludePay || s.tbIncludeSubsistence) && (
                               <div className="px-4 py-2.5 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-black/20 flex flex-col gap-1.5 print:border-gray-200 print:bg-gray-50">
                                 {s.pdIncludePay && (
                                   <div className="flex justify-between items-center text-xs">
                                     <span className="text-slate-600 dark:text-slate-400 print:text-gray-600">Period Gross Pay</span>
-                                    <span className="font-mono font-bold text-slate-900 dark:text-slate-50 print:text-black tabular-nums">{formatCurrencyIn(split.days * (parseFloat(s.pdDayRate) || 0), 'GBP')}</span>
+                                    <span className="font-mono font-bold text-slate-900 dark:text-slate-50 print:text-black tabular-nums">{formatCurrencyIn(split.days * (parseFloat(s.tbDayRate) || 0), 'GBP')}</span>
                                   </div>
                                 )}
-                                {s.pdIncludeSubsistence && s.pdSubsistenceRate && (
+                                {s.tbIncludeSubsistence && s.tbSubsistenceRate && (
                                   <div className="flex justify-between items-center text-xs">
                                     <div className="flex items-center gap-1.5 text-slate-600 dark:text-slate-400 print:text-gray-600">
                                       <span>Sub. Days:</span>
@@ -2011,7 +2084,7 @@ export default function CalculatorPage() {
                                         )}
                                       </div>
                                     </div>
-                                    <span className="font-mono font-bold text-slate-900 dark:text-slate-50 print:text-black tabular-nums">{formatCurrencyIn(split.subDays * (parseFloat(s.pdSubsistenceRate) || 0), 'GBP')}</span>
+                                    <span className="font-mono font-bold text-slate-900 dark:text-slate-50 print:text-black tabular-nums">{formatCurrencyIn(split.subDays * (parseFloat(s.tbSubsistenceRate) || 0), 'GBP')}</span>
                                   </div>
                                 )}
                               </div>
@@ -2227,7 +2300,7 @@ export default function CalculatorPage() {
                     {s.includeNI && (
                       <LineItem label={s.seafarerExempt ? "Employers NIC (Exempt)" : `Employers NIC (${activeFiscalRates.employerNI * 100}%)`} value={contract.cEmployerNI * contract.crewSize} currency={s.cCurrency} />
                     )}
-                    {s.includeSubsistence && contract.cSubTravelAmt > 0 && (() => { const tDays = s.includeTrip ? Math.max(1, parseFloat(dbTravelDays) || 1) : Math.max(1, parseFloat(dbSubTravelDays) || 1); return <LineItem label={`Travel Subsistence (×${tDays}d)`} value={contract.cSubTravelAmt * contract.crewSize * tDays} currency={s.cCurrency} />; })()}
+                    {s.includeSubsistence && contract.cSubTravelAmt > 0 && (() => { const tDays = s.includeTrip ? Math.max(1, parseFloat(dbTravelDays) || 1) : Math.max(1, parseFloat(dbSubTravelDays) || 1); return <LineItem label={`Travel Subsistence (×${tDays} day${tDays !== 1 ? 's' : ''})`} value={contract.cSubTravelAmt * contract.crewSize * tDays} currency={s.cCurrency} />; })()}
                     {s.includeSubsistence && contract.cSubOnboardAmt > 0 && <LineItem label="Subsistence" value={contract.cSubOnboardAmt * contract.crewSize} currency={s.cCurrency} />}
                     <LineItem label={`Management Fee (${contract.feeType === 'percentage' && contract.cMarginVal > 0 ? `${contract.cMarginVal}%` : 'Fixed'})`} value={contract.cManagementFee * contract.crewSize} currency={s.cCurrency} />
 
@@ -2414,7 +2487,7 @@ export default function CalculatorPage() {
                        <div className="font-bold text-slate-500 dark:text-slate-400 print:text-gray-600">Discipline:</div><div className="font-bold print:text-black">{s.refDiscipline || '-'}</div>
                        <div className="font-bold text-slate-500 dark:text-slate-400 print:text-gray-600">Company:</div><div className="font-bold print:text-black">{s.refCompany || '-'}</div>
                        <div className="font-bold text-slate-500 dark:text-slate-400 print:text-gray-600">Vessel:</div><div className="font-bold print:text-black">{s.refVessel || '-'}</div>
-                       <div className="font-bold text-slate-500 dark:text-slate-400 print:text-gray-600">Dates of Assignment:</div><div className="font-bold print:text-black">{s.refDates || '-'}</div>
+                       <div className="font-bold text-slate-500 dark:text-slate-400 print:text-gray-600">Assignment Dates:</div><div className="font-bold print:text-black">{s.refDates || '-'}</div>
                      </div>
 
                      <h3 className="text-lg font-bold border-b border-slate-200 dark:border-slate-700 pb-2 mb-4 print:border-gray-300 text-slate-900 dark:text-slate-50 print:text-black">Performance Assessment</h3>
